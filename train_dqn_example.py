@@ -68,7 +68,7 @@ def load_agent_submission(submission_dir: Path):
     cfg_path = None
     for dirpath, dirnames, file_names in os.walk(submission_dir):
         for file_name in [f for f in file_names if f.endswith(".py")]:
-            if file_name == "agent.py":
+            if file_name == "agent_DQN.py":
                 module_path = dirpath
 
             if file_name == "gym_cfg.py":
@@ -81,7 +81,7 @@ def load_agent_submission(submission_dir: Path):
 
     assert (
         module_path is not None
-    ), "Cannot find file named agent.py, please check your submission zip"
+    ), "Cannot find file named agent_DQN.py, please check your submission zip"
     assert(
         cfg_path is not None
     ), "Cannot find file named gym_cfg.py, please check your submission zip"
@@ -90,7 +90,7 @@ def load_agent_submission(submission_dir: Path):
 
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent as agent_submission
+    import agent_DQN as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
 
