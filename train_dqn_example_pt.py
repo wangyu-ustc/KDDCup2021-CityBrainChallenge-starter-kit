@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import gym
 import numpy as np
+import torch
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
@@ -79,7 +80,7 @@ def load_agent_submission(submission_dir: Path):
 
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent_DQN as agent_submission
+    import agent_DQN_pt as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
 
@@ -300,13 +301,25 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
 
     roadnet_path = Path(simulator_configs['road_file_addr'])
 
-    intersections, roads, agents = process_roadnet(roadnet_path)
-
     observations, infos = env.reset()
     agent_id_list = []
     for k in observations:
         agent_id_list.append(int(k.split('_')[0]))
     agent_id_list = list(set(agent_id_list))
+
+    intersections, roads, agents = process_roadnet(roadnet_path)
+
+    agent_adjs = {}
+    for agent_id, in_out_roads in agents.items():
+        agent_adjs[agent_id] = []
+        for in_road in in_out_roads[:4]:
+            if in_road == -1: continue
+            agent_adjs[agent_id].append(roads[in_road]['start_inter'])
+            ### 这里会报错
+            assert roads[in_road]['start_inter'] in agent_id_list
+        assert agent_adjs[agent_id][-1] != agent_id
+
+
     agent = agent_spec[scenario[0]]
     agent.load_agent_list(agent_id_list)
     agent.load_roadnet(intersections,roads,agents)
@@ -343,13 +356,32 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
                 observations_for_agent = {}
                 for key, val in observations.items():
                     observations_agent_id = int(key.split('_')[0])
-                    observations_feature = key.split('_')[1]
+                    observations_feature = "_".join(key.split('_')[1:])
                     if (observations_agent_id not in observations_for_agent.keys()):
                         observations_for_agent[observations_agent_id] = {}
                     val = val[1:]
                     while len(val) < agent.ob_length:
                         val.append(0)
                     observations_for_agent[observations_agent_id][observations_feature] = val
+
+                for agent_id in agent_id_list:
+                    observations_for_agent[agent_id]['ob_embedding'] = \
+                        agent.model.observation_proj(
+                            torch.tensor(observations_for_agent[agent_id]['lane_vehicle_num'], dtype=torch.float32))
+
+
+                print("agent_id_list:", agent_id_list)
+                for agent_id, data in observations_for_agent.items():
+                    print("Agent_id:", agent_id)
+
+                for agent_id in agent_id_list:
+                    observations_for_agent[agent_id]['adjacency'] = []
+                    for adj_agent_id in agent_adjs[agent_id]:
+                        print("agent_adjs:", adj_agent_id)
+                        observations_for_agent[agent_id]['adjacency'].append(observations_for_agent[adj_agent_id]['ob_embedding'])
+
+                    observations_for_agent[agent_id]['adjacency'] = torch.stack(observations_for_agent[agent_id]['adjacency'])
+
 
                 # Get the action, note that we use act_() for training.
                 actions = agent.act_(observations_for_agent)
@@ -366,17 +398,18 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
                     i += 1
 
                     # Interacts with the environment and get the reward.
-                    print("stepping")
+                    # print("stepping")
                     observations, rewards, dones, infos = env.step(actions_)
-                    print("after step")
+                    # print("after step")
                     for agent_id in agent_id_list:
                         lane_vehicle = observations["{}_lane_vehicle_num".format(agent_id)]
                         pressure = (np.sum(lane_vehicle[13: 25]) - np.sum(lane_vehicle[1: 13])) / args.action_interval
+                        
+                        lane_vehicle_speed = observations["{}_lane_speed".format(agent_id)]
                         if agent_id in rewards_list:
                             rewards_list[agent_id] += pressure
                         else:
                             rewards_list[agent_id] = pressure
-
 
                 rewards = rewards_list
                 new_observations_for_agent = {}
@@ -385,7 +418,7 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
 
                 for key, val in observations.items():
                     observations_agent_id = int(key.split('_')[0])
-                    observations_feature = key.split('_')[1]
+                    observations_feature = "_".join(key.split('_')[1:])
                     if (observations_agent_id not in new_observations_for_agent.keys()):
                         new_observations_for_agent[observations_agent_id] = {}
                     val = val[1:]
@@ -393,10 +426,22 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
                         val.append(0)
                     new_observations_for_agent[observations_agent_id][observations_feature] = val
 
-                # Remember (state, action, reward, next_state) into memory buffer.
                 for agent_id in agent_id_list:
-                    agent.remember(observations_for_agent[agent_id]['lane'], actions[agent_id], rewards[agent_id],
-                                   new_observations_for_agent[agent_id]['lane'])
+                    new_observations_for_agent[agent_id]['ob_embedding'] = \
+                        agent.model.observation_proj(
+                            torch.tensor(new_observations_for_agent[agent_id]['lane_vehicle_num'], dtype=torch.float32))
+
+                # Remember (state, action, reward, next_state) into memory buffer.
+
+
+                for agent_id in agent_id_list:
+                    new_observations_for_agent[agent_id]['adjacency'] = []
+                    for adj_agent_id in agent_adjs[agent_id]:
+                        new_observations_for_agent[agent_id]['adjacency'].append(new_observations_for_agent[adj_agent_id]['ob_embedding'])
+                    new_observations_for_agent[agent_id]['adjacency'] = torch.stack(new_observations_for_agent[agent_id]['adjacency'])
+
+                    agent.remember(observations_for_agent[agent_id], actions[agent_id], rewards[agent_id],
+                                   new_observations_for_agent[agent_id])
                     episodes_rewards[agent_id] += rewards[agent_id]
                 episodes_decision_num += 1
                 total_decision_num += 1

@@ -1,3 +1,4 @@
+import copy
 import time
 import torch
 import torch.nn as nn
@@ -119,13 +120,14 @@ class ColightAgent(TestAgent):
         self.num_actions = len(dic_traffic_env_conf['PHASE'][dic_traffic_env_conf['SIMULATOR_TYPE']])
         self.num_lanes = np.sum(np.array(list(dic_traffic_env_conf['LANE_NUM'].values())))
         self.len_feature = self.compute_len_feature()
-        self.memory = self.build_memory()
+        self.memory = []
 
         if cnt_round == 0:
-            self.q_network = self.build_network()
+            self.q_network = Q_network(num_agents, len_feature=len_feature, MLP_layers=[32, 32],
+                                       CNN_layers=dic_agent_conf['CNN_layers'], CNN_heads=[1]*len(dic_agent_conf['CNN_layers']))
             if os.listdir(dic_path["PATH_TO_MODEL"]):
                 self.q_network.load_dict(torch.load(os.path.join(dic_path["PATH_TO_MODEL"], "round_0_inter_{0}.ckpt")))
-            self.q_network_bar = self.build_network_from_copy(self.q_network)
+            self.q_network_bar = copy.deepcopy(self.q_network)
         else:
             try:
                 if best_round:
