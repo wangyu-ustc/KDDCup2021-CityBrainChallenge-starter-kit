@@ -12,7 +12,7 @@ path = os.path.split(os.path.realpath(__file__))[0]
 import sys
 sys.path.append(path)
 import random
-from model import BaseModel, CoLightModel
+from model import BaseModel
 
 import gym
 
@@ -109,7 +109,7 @@ class TestAgent():
 
         actions = {}
         for agent_id in self.agent_list:
-            action = self.get_action(observations_for_agent[agent_id])
+            action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
             actions[agent_id] = action
         return actions
 
@@ -140,8 +140,8 @@ class TestAgent():
 
         if np.random.rand() <= self.epsilon:
             return self.sample()
-        # ob = torch.tensor(ob, dtype=torch.float32)
-        act_values =  self.model(ob)
+        ob = torch.tensor(ob, dtype=torch.float32)
+        act_values =  self.model(ob.reshape(1, -1))
         # ob = self._reshape_ob(ob)
         # act_values = self.model.predict([ob])
         return torch.argmax(act_values[0])
@@ -153,8 +153,7 @@ class TestAgent():
     def _build_model(self):
 
         # Neural Net for Deep-Q learning Model
-        # return BaseModel(input_dim=self.ob_length, output_dim=self.action_space)
-        return CoLightModel(input_dim=self.ob_length, output_dim=self.action_space)
+        return BaseModel(input_dim=self.ob_length, output_dim=self.action_space)
 
     def update_target_network(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -169,30 +168,14 @@ class TestAgent():
             minibatch = self.memory
         else:
             minibatch = random.sample(self.memory, self.batch_size)
+        obs, actions, rewards, next_obs, = [np.stack(x) for x in np.array(minibatch).T]
+        target = rewards + self.gamma * np.amax(self.target_model.predict([next_obs]), axis=1)
+        target_f = self.model(torch.tensor(obs).unsqueeze(0))
 
-        target = []
-        target_f = []
-        pred_target = []
-        actions = []
+        for i, action in enumerate(actions):
+            target_f[i][action] = target[i]
 
-        for data in minibatch:
-            ob, action, reward, next_ob = data
-            target.append(reward + self.gamma * np.max(self.target_model(next_ob)))
-            target_f.append(self.model(ob))
-            actions.append(action)
-            target_f[-1][action] = target[-1]
-            pred_target = self.model(ob)
-
-        # actions, rewards, next_obs, = [np.stack(x) for x in np.array(minibatch[1:]).T]
-        # target = rewards + self.gamma * np.amax(self.target_model(next_obs), axis=1)
-        # target_f = self.model(obs)
-
-        target_f = torch.stack(target_f)
-        pred_target = torch.stack(pred_target)
-        # for i, action in enumerate(actions):
-        #     target_f[i][action] = target[i]
-        # pred_target = self.model(ob)
-
+        pred_target = self.model(torch.tensor(obs).unsqueeze(0))
         loss = F.mse_loss(pred_target, target_f)
         self.optimizer.zero_grad()
         loss.backward()

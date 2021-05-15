@@ -16,6 +16,16 @@ class BaseModel(nn.Module):
         x = self.relu(self.linear1(ob))
         return self.linear2(x)
 
+
+# class FRAPModel(nn.Module):
+#     def __init__(self, input_dim, output_dim):
+#         super(FRAPModel, self).__init__()
+#
+#     def forward(self, ob, last_phase):
+#
+#         return ob
+
+
 class CoLightModel(nn.Module):
     def __init__(self, input_dim, output_dim, agent_list=None):
         super(CoLightModel, self).__init__()
@@ -50,54 +60,3 @@ class CoLightModel(nn.Module):
         adj_ob_embeddings = torch.stack(obs['adjacency'])
         cooperation_adj = torch.sum(self.cooperation_proj(adj_ob_embeddings) * interaction_scores.unsqueeze(1), dim=0)
         self.final_proj(cooperation_adj.unsqueeze(0))
-
-
-
-
-        # act, attention = self.action_att_predict([obs])
-        # return act[0], attention[0]
-
-
-
-    # def action_att_predict(self, state, total_features=None, total_adjs=None, bar=False):
-    #     batch_size = len(state)
-    #     if total_features is None and total_adjs is None:
-    #         total_features, total_adjs = [], []
-    #         for i in range(batch_size):
-    #             feature, adj = [], []
-    #             for agent in range(self.num_agents):
-    #                 observation = [self.last_change_step[agent]]
-    #                 for name, value in state[i].items():
-    #                     if "vehicle_num" in name:
-    #                         observation.extend(value[1:])
-    #                 feature.append(observation)
-    #                 adj.append(state[i][agent]['adjacency_matrix'])
-    #             total_features.append(feature)
-    #             total_adjs.append(adj)
-    #         total_features = np.reshape(np.array(total_features), [batch_size, self.num_agents, -1])
-    #         total_adjs = self.adjacency_index2matrix(np.array(total_adjs))
-    #     if bar:
-    #         all_output = self.q_network_bar.predict([total_features, total_adjs])
-    #     else:
-    #         all_output = self.q_network([total_features, total_adjs])
-    #     action, attention = all_output[0], all_output[1]
-    #
-    #     if len(action) > 1:
-    #         return total_features, total_adjs, action, attention
-    #
-    #     max_action = np.extend_dims(np.argmax(action, acis=-1), axis=-1)
-    #     random_action = np.reshape(np.random.randint(self.num_actions, size=1 * self.num_agents),
-    #                                (1, self.num_agents, 1))
-    #     # [batch,agent,2]
-    #     possible_action = np.concatenate([max_action, random_action], axis=-1)
-    #     selection = np.random.choice(
-    #         [0, 1],
-    #         size=batch_size * self.num_agents,
-    #         p=[1 - dic_agent_conf["EPSILON"], dic_agent_conf["EPSILON"]])
-    #     act = possible_action.reshape((batch_size * self.num_agents, 2))[
-    #         np.arange(batch_size * self.num_agents), selection]
-    #     act = np.reshape(act, (batch_size, self.num_agents))
-    #     return act, attention
-
-
-
