@@ -16,6 +16,19 @@ class BaseModel(nn.Module):
         x = self.relu(self.linear1(ob))
         return self.linear2(x)
 
+class Base_QR_DQN_Model(nn.Module):
+    def __init__(self, input_dim, output_dim, n_quant):
+        super(Base_QR_DQN_Model, self).__init__()
+        self.n_quant = n_quant
+        self.n_action = output_dim
+        self.linear1 = nn.Linear(input_dim, 20)
+        self.relu = nn.ReLU()
+        self.linear2 = nn.Linear(20, output_dim * n_quant)
+
+    def forward(self, ob):
+        x = self.relu(self.linear1(ob))
+        return self.linear2(x).view(-1, self.n_action, self.n_quant)
+
 
 # class FRAPModel(nn.Module):
 #     def __init__(self, input_dim, output_dim):
@@ -60,3 +73,5 @@ class CoLightModel(nn.Module):
         adj_ob_embeddings = torch.stack(obs['adjacency'])
         cooperation_adj = torch.sum(self.cooperation_proj(adj_ob_embeddings) * interaction_scores.unsqueeze(1), dim=0)
         self.final_proj(cooperation_adj.unsqueeze(0))
+
+

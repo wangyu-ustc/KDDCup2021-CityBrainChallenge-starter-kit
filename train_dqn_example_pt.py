@@ -19,6 +19,9 @@ logger.setLevel(logging.INFO)
 
 gym.logger.setLevel(gym.logger.ERROR)
 
+import warnings
+warnings.filterwarnings("ignore")
+
 
 def pretty_files(path):
     contents = os.listdir(path)
@@ -78,7 +81,8 @@ def load_agent_submission(submission_dir: Path):
 
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent_DQN_pt as agent_submission
+    import agent_QR_DQN as agent_submission
+    # import agent_DQN_pt as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
 
