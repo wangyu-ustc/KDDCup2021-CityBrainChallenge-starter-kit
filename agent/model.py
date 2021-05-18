@@ -30,13 +30,48 @@ class Base_QR_DQN_Model(nn.Module):
         return self.linear2(x).view(-1, self.n_action, self.n_quant)
 
 
-# class FRAPModel(nn.Module):
-#     def __init__(self, input_dim, output_dim):
-#         super(FRAPModel, self).__init__()
-#
-#     def forward(self, ob, last_phase):
-#
-#         return ob
+class FRAPModel(nn.Module):
+    def __init__(self, relations):
+        super(FRAPModel, self).__init__()
+        self.demand_embedding = nn.Linear(2, 4)
+        self.conv2d1 = nn.Conv2d(in_channels=8, out_channels=20, kernel_size=(1,1),stride=(1,1))
+        self.relations = torch.tensor(relations)  # (1, 8, 7)
+        self.relation_embedding = nn.Embedding(2, 4)
+        self.relation_conv2d = nn.Conv2d(in_channels=4, out_channels=20, kernel_size=(1,1), stride=(1,1))
+        self.conv2d2 = nn.Conv2d(in_channels=20, out_channels=20, kernel_size=(1,1), stride=(1,1))
+        self.conv2d3 = nn.Conv2d(in_channels=20, out_channels=1, kernel_size=(1,1), stride=(1,1))
+
+    def forward(self, ob):
+        '''
+        :param ob: [bsz, 8, 2]
+        :return: distribution of actions
+        '''
+        bsz = ob.shape[0]
+        demands = self.demand_embedding(ob.reshape(-1, 2)).reshape(bsz, 8, 4)
+        # demand: [bsz, 8, 4]
+        pair_representation = torch.zeros([bsz, 8, 7, 8])
+        for i, demand in enumerate(demands):
+            # demand: [8, 4]
+            for s in range(8):
+                count = 0
+                for k in range(8):
+                    if k == s: continue
+                    pair_representation[i][s][count] = torch.cat([demand[s], demand[k]])
+                    count += 1
+
+        # pair_representation: (bsz, 8, 7, 8) -> (bsz, 8, 8, 7) --> x: (bsz, 20, 8, 7)
+        x = self.conv2d1(pair_representation.permute(0, 3, 1, 2))
+
+        # Phase competition mask
+        phase_cometition_mask = self.relation_embedding(self.relations).permute(0, 3, 1, 2) # (1, 4, 8, 7)
+        phase_cometition_mask = self.relation_conv2d(phase_cometition_mask) # (1, 20, 8, 7)
+
+        x = x * phase_cometition_mask # (bsz, 20, 8, 7)
+        x = self.conv2d2(x)
+        x = self.conv2d3(x) # (bsz, 1, 8, 7)
+        x = x.squeeze() # (bsz, 8, 7)
+        x = torch.sum(x, dim=-1)
+        return x
 
 
 class CoLightModel(nn.Module):

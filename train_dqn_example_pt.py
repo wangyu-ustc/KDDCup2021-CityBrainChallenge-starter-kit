@@ -22,6 +22,7 @@ gym.logger.setLevel(gym.logger.ERROR)
 import warnings
 warnings.filterwarnings("ignore")
 
+With_Speed = False
 
 def pretty_files(path):
     contents = os.listdir(path)
@@ -81,7 +82,7 @@ def load_agent_submission(submission_dir: Path):
 
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent_QR_DQN as agent_submission
+    import agent_DQN_pt as agent_submission
     # import agent_DQN_pt as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
@@ -390,7 +391,7 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
 
                 for key, val in observations.items():
                     observations_agent_id = int(key.split('_')[0])
-                    observations_feature = key.split('_')[1]
+                    observations_feature = "_".join(key.split('_')[1:])
                     if (observations_agent_id not in new_observations_for_agent.keys()):
                         new_observations_for_agent[observations_agent_id] = {}
                     val = val[1:]
@@ -400,9 +401,17 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
 
                 # Remember (state, action, reward, next_state) into memory buffer.
                 for agent_id in agent_id_list:
-                    agent.remember(observations_for_agent[agent_id]['lane_vehicle_num'], actions[agent_id],
-                                   rewards[agent_id],
-                                   new_observations_for_agent[agent_id]['lane'])
+                    if With_Speed:
+                        agent.remember(np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
+                                                       observations_for_agent[agent_id]['lane_speed']]),
+                                       actions[agent_id],
+                                       rewards[agent_id],
+                                       np.concatenate([new_observations_for_agent[agent_id]['lane_vehicle_num'],
+                                                       new_observations_for_agent[agent_id]['lane_speed']]))
+                    else:
+                        agent.remember(observations_for_agent[agent_id]['lane_vehicle_num'], actions[agent_id],
+                                       rewards[agent_id],
+                                       new_observations_for_agent[agent_id]['lane_vehicle_num'])
                     episodes_rewards[agent_id] += rewards[agent_id]
                 episodes_decision_num += 1
                 total_decision_num += 1

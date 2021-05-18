@@ -17,6 +17,28 @@ N_QUANT = 200
 QUANTS = np.linspace(0.0, 1.0, N_QUANT + 1)[1:]
 QUANTS_TARGET = (np.linspace(0.0, 1.0, N_QUANT + 1)[:-1] + QUANTS) / 2
 
+# MODEL_NAME = 'MLP'
+MODEL_NAME = 'FRAP'
+
+FRAP_intersections = [[11, 17],
+                      [4, 19],
+                      [2, 20],
+                      [7, 22],
+                      [5, 23],
+                      [10, 13],
+                      [8, 14],
+                      [1, 18]]
+Phase_to_FRAP_Phase = {
+    0: [0, 0, 0, 1, 0, 0, 0, 1],
+    1: [0, 0, 1, 0, 0, 0, 1, 0],
+    2: [0, 1, 0, 0, 0, 1, 0, 0],
+    3: [1, 0, 0, 0, 1, 0, 0, 0],
+    4: [0, 0, 1, 0, 0, 0, 0, 1],
+    5: [0, 1, 0, 0, 1, 0, 0, 0],
+    6: [0, 0, 0, 1, 0, 0, 1, 0],
+    7: [1, 0, 0, 0, 0, 1, 0, 0]
+}
+
 class TestAgent():
     def __init__(self):
 
@@ -89,11 +111,26 @@ class TestAgent():
         # Instead of override, We use another act_() function for training,
         # while keep the original act() function for evaluation unchanged.
 
-        actions = {}
-        for agent_id in self.agent_list:
-            action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
-            actions[agent_id] = action
-        return actions
+        if MODEL_NAME == 'MLP':
+            actions = {}
+            for agent_id in self.agent_list:
+                action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
+                actions[agent_id] = action
+            return actions
+        else:
+            actions = {}
+            for agent_id in self.agent_list:
+                lane_vehicle_num = observations_for_agent[agent_id]['lane_vehicle_num']
+                pressures = []
+                for i in range(8):
+                    pressure_i = lane_vehicle_num[FRAP_intersections[i][1]] - lane_vehicle_num[FRAP_intersections[i][0]]
+                    pressures.append([pressure_i, Phase_to_FRAP_Phase[self.last_change_step[agent_id]][i]])
+
+                action = self.get_action(pressures)
+
+                actions[agent_id] = action
+
+            return actions
 
     def act(self, obs):
         observations = obs['observations']
@@ -119,11 +156,15 @@ class TestAgent():
     def get_action(self, ob):
 
         # The epsilon-greedy action selector.
-
         if np.random.rand() <= self.epsilon:
             return self.sample()
+
         ob = torch.tensor(ob, dtype=torch.float32)
-        act_values =  self.model(ob.reshape(1, -1)).mean(dim=2)
+
+        if MODEL_NAME == 'MLP':
+            act_values =  self.model(ob.reshape(1, -1)).mean(dim=2)
+        else:
+            act_values = self.model(ob)
         # ob = self._reshape_ob(ob)
         # act_values = self.model.predict([ob])
         return torch.argmax(act_values[0]).item()
