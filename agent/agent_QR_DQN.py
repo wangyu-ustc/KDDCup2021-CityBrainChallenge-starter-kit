@@ -12,13 +12,12 @@ from model import BaseModel, Base_QR_DQN_Model
 import os
 from collections import deque
 import numpy as np
+from configs import *
 
 N_QUANT = 200
 QUANTS = np.linspace(0.0, 1.0, N_QUANT + 1)[1:]
 QUANTS_TARGET = (np.linspace(0.0, 1.0, N_QUANT + 1)[:-1] + QUANTS) / 2
 
-# MODEL_NAME = 'MLP'
-MODEL_NAME = 'FRAP'
 
 FRAP_intersections = [[11, 17],
                       [4, 19],
@@ -70,8 +69,8 @@ class TestAgent():
         self.model = self._build_model()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         # Remember to uncomment the following lines when submitting, and submit your model file as well.
-        # path = os.path.split(os.path.realpath(__file__))[0]
-        # self.load_model(path, 99)
+        path = os.path.split(os.path.realpath(__file__))[0]
+        self.load_model(path, 99)
         self.target_model = self._build_model()
         self.update_target_network()
 
@@ -149,8 +148,12 @@ class TestAgent():
         # Get actions
         for agent in self.agent_list:
             self.epsilon = 0
-            actions[agent] = self.get_action(observations_for_agent[agent]['lane_vehicle_num']) + 1
-
+            if with_Speed:
+                action = self.get_action(np.concatenate(observations_for_agent[agent]['lane_vehicle_num'],
+                                                        observations_for_agent[agent]['lane_speed']))
+            else:
+                action = self.get_action(observations_for_agent[agent]['lane_vehicle_num'])
+            actions[agent] = action + 1
         return actions
 
     def get_action(self, ob):
@@ -177,7 +180,11 @@ class TestAgent():
 
         # Neural Net for Deep-Q learning Model
         # return BaseModel(input_dim=self.ob_length, output_dim=self.action_space)
-        return Base_QR_DQN_Model(input_dim=self.ob_length, output_dim=self.action_space, n_quant=N_QUANT)
+        if with_Speed:
+            return Base_QR_DQN_Model(input_dim=self.ob_length * 2, output_dim=self.action_space, n_quant=N_QUANT)
+        else:
+            return Base_QR_DQN_Model(input_dim=self.ob_length, output_dim=self.action_space, n_quant=N_QUANT)
+
 
     def update_target_network(self):
         self.target_model.load_state_dict(self.model.state_dict())

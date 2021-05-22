@@ -7,6 +7,7 @@ As an example, this file offers a standard implementation.
 import pickle
 import torch
 import torch.nn.functional as F
+from torch.distributions.categorical import Categorical
 import os
 path = os.path.split(os.path.realpath(__file__))[0]
 import sys
@@ -69,8 +70,9 @@ class TestAgent():
         # Remember to uncomment the following lines when submitting, and submit your model file as well.
         # path = os.path.split(os.path.realpath(__file__))[0]
         # self.load_model(path, 99)
-        self.target_model = self._build_model()
-        self.update_target_network()
+
+        # self.target_model = self._build_model()
+        # self.update_target_network()
 
 
 
@@ -124,9 +126,12 @@ class TestAgent():
                 #     pressures.append([pressure_i, Phase_to_FRAP_Phase[self.last_change_step[agent_id]][i]])
 
                 action = self.get_action(observations_for_agent[agent_id])
-                if isinstance(action, int): self.last_change_step[agent_id] = action
-                else: self.last_change_step[agent_id] = action.item()
-                actions[agent_id] = action
+                if isinstance(action, int):
+                    self.last_change_step[agent_id] = action
+                    actions[agent_id] = torch.tensor(action)
+                else:
+                    self.last_change_step[agent_id] = action.item()
+                    actions[agent_id] = action
 
         return actions
 
@@ -167,7 +172,7 @@ class TestAgent():
         # The epsilon-greedy action selector.
 
         if np.random.rand() <= self.epsilon:
-            return self.sample()
+            return torch.tensor(self.sample())
         ob = torch.tensor(ob, dtype=torch.float32)
         if MODEL_NAME == 'MLP':
             act_values = self.model(ob.reshape(1, -1))
@@ -175,7 +180,9 @@ class TestAgent():
             act_values = self.model(ob.reshape(1, -1))
         # ob = self._reshape_ob(ob)
         # act_values = self.model.predict([ob])
-        return torch.argmax(act_values[0])
+        self.m = Categorical(torch.softmax(act_values, -1))
+
+        return self.m.sample()
 
     def sample(self):
         # Random samples
@@ -222,13 +229,13 @@ class TestAgent():
             self.epsilon *= self.epsilon_decay
 
     def load_model(self, dir="model/dqn", step=0):
-        name = "qr_dqn_agent_{}.ckpt".format(step)
+        name = "dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         print("load from " + model_name)
         self.model.load_state_dict(torch.load(model_name))
 
     def save_model(self, dir="model/dqn", step=0):
-        name = "qr_dqn_agent_{}.ckpt".format(step)
+        name = "dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         torch.save(self.model.state_dict(), model_name)
 

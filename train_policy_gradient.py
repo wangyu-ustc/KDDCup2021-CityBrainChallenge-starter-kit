@@ -23,6 +23,8 @@ gym.logger.setLevel(gym.logger.ERROR)
 import warnings
 warnings.filterwarnings("ignore")
 
+With_Speed = False
+
 def pretty_files(path):
     contents = os.listdir(path)
     return "[{}]".format(", ".join(contents))
@@ -81,7 +83,7 @@ def load_agent_submission(submission_dir: Path):
 
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent_QR_DQN as agent_submission
+    import agent_PC as agent_submission
     # import agent_DQN_pt as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
@@ -392,7 +394,6 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
                     for agent_id in agent_id_list:
                         lane_vehicle = observations["{}_lane_vehicle_num".format(agent_id)]
                         pressure = (np.sum(lane_vehicle[13: 25]) - np.sum(lane_vehicle[1: 13])) / args.action_interval
-
                         lane_vehicle_speed = observations["{}_lane_speed".format(agent_id)]
                         if agent_id in rewards_list:
                             rewards_list[agent_id] += pressure
@@ -400,62 +401,28 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
                             rewards_list[agent_id] = pressure
 
                 rewards = rewards_list
-                new_observations_for_agent = {}
 
-                # Get next state.
+                loss = 0
+                for key in actions.keys():
+                    loss = loss - agent.m.log_prob(actions[key]) * rewards[key]
 
-                for key, val in observations.items():
-                    observations_agent_id = int(key.split('_')[0])
-                    observations_feature = "_".join(key.split('_')[1:])
-                    if (observations_agent_id not in new_observations_for_agent.keys()):
-                        new_observations_for_agent[observations_agent_id] = {}
-                    val = val[1:]
-                    while len(val) < agent.ob_length:
-                        val.append(0)
-                    new_observations_for_agent[observations_agent_id][observations_feature] = val
+                agent.optimizer.zero_grad()
+                loss.backward()
+                agent.optimizer.step()
 
-                if MODEL_NAME == 'FRAP':
-                    new_observations_frap = {}
-                    for agent_id in agent_id_list:
-                        pressures = []
-                        lane_vehicle_num = new_observations_for_agent[agent_id]['lane_vehicle_num']
-                        for j in range(8):
-                            pressure_j = lane_vehicle_num[FRAP_intersections[j][1]] - lane_vehicle_num[
-                                FRAP_intersections[j][0]]
-                            pressures.append([pressure_j, Phase_to_FRAP_Phase[agent.last_change_step[agent_id]][j]])
-                        new_observations_frap[agent_id] = pressures
-
-                # Remember (state, action, reward, next_state) into memory buffer.
                 for agent_id in agent_id_list:
-                    if MODEL_NAME == 'MLP':
-                        if with_Speed:
-                            agent.remember(np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
-                                                           observations_for_agent[agent_id]['lane_speed']]),
-                                           actions[agent_id],
-                                           rewards[agent_id],
-                                           np.concatenate([new_observations_for_agent[agent_id]['lane_vehicle_num'],
-                                                           new_observations_for_agent[agent_id]['lane_speed']]))
-                        else:
-                            agent.remember(observations_for_agent[agent_id]['lane_vehicle_num'], actions[agent_id],
-                                           rewards[agent_id],
-                                           new_observations_for_agent[agent_id]['lane_vehicle_num'])
-                    else:
-                        agent.remember(observations_frap[agent_id], actions[agent_id],
-                                       rewards[agent_id],
-                                       new_observations_frap[agent_id])
-
-
                     episodes_rewards[agent_id] += rewards[agent_id]
+
                 episodes_decision_num += 1
                 total_decision_num += 1
 
                 last_obs = observations
 
             # Update the network
-            if total_decision_num > agent.learning_start and total_decision_num % agent.update_model_freq == agent.update_model_freq - 1:
-                agent.replay()
-            if total_decision_num > agent.learning_start and total_decision_num % agent.update_target_model_freq == agent.update_target_model_freq - 1:
-                agent.update_target_network()
+            # if total_decision_num > agent.learning_start and total_decision_num % agent.update_model_freq == agent.update_model_freq - 1:
+            #     agent.replay()
+            # if total_decision_num > agent.learning_start and total_decision_num % agent.update_target_model_freq == agent.update_target_model_freq - 1:
+            #     agent.update_target_network()
             if all(dones.values()):
                 break
         if e % args.save_rate == args.save_rate - 1:

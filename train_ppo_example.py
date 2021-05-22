@@ -12,16 +12,14 @@ from pathlib import Path
 import re
 import gym
 import numpy as np
-from agent.configs import *
-
+import torch
+from agent.utils import *
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
 logger.setLevel(logging.INFO)
 
 gym.logger.setLevel(gym.logger.ERROR)
 
-import warnings
-warnings.filterwarnings("ignore")
 
 def pretty_files(path):
     contents = os.listdir(path)
@@ -72,21 +70,21 @@ def load_agent_submission(submission_dir: Path):
                 cfg_path = dirpath
     # error
     assert (
-            module_path is not None
+        module_path is not None
     ), "Cannot find file named agent.py, please check your submission zip"
-    assert (
-            cfg_path is not None
+    assert(
+        cfg_path is not None
     ), "Cannot find file named gym_cfg.py, please check your submission zip"
     sys.path.append(str(module_path))
 
+
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent_QR_DQN as agent_submission
-    # import agent_DQN_pt as agent_submission
+    import agent_ppo as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
 
-    return agent_submission.agent_specs, gym_cfg_instance
+    return  agent_submission.agent_specs,gym_cfg_instance
 
 
 def read_config(cfg_file):
@@ -95,7 +93,7 @@ def read_config(cfg_file):
         lines = f.readlines()
         for line in lines:
             line = line.rstrip('\n').split(' ')
-            if (len(line) == 3 and line[0][0] != '#'):
+            if(len(line) == 3 and line[0][0] != '#'):
                 configs[line[0]] = line[-1]
     return configs
 
@@ -151,7 +149,7 @@ def process_roadnet(roadnet_file):
                         'have_signal': int(line[3]),
                         'end_roads': [],
                         'start_roads': [],
-                        'lanes': []
+                        'lanes':[]
                     }
                 elif (cnt == 2):
                     if (len(line) != 8):
@@ -213,7 +211,7 @@ def process_delay_index(lines, roads, step):
 
     for i in range(len(lines)):
         line = lines[i]
-        if (line[0] == 'for'):
+        if(line[0] == 'for'):
             vehicle_id = int(line[2])
             now_dict = {
                 'distance': float(lines[i + 1][2]),
@@ -222,9 +220,9 @@ def process_delay_index(lines, roads, step):
                 'route': list(map(int, list(map(float, lines[i + 4][2:])))),
                 'speed': float(lines[i + 5][2]),
                 'start_time': float(lines[i + 6][2]),
-                't_ff': float(lines[i + 7][2]),
-                ##############
-                'step': int(lines[i + 8][2])
+                't_ff': float(lines[i+7][2]),
+            ##############
+                'step': int(lines[i+8][2])
             }
             step = now_dict['step']
             ##################
@@ -234,14 +232,14 @@ def process_delay_index(lines, roads, step):
             tt_f_r = 0.0
             current_road_pos = 0
             for pos in range(len(now_dict['route'])):
-                if (now_dict['road'] == now_dict['route'][pos]):
+                if(now_dict['road'] == now_dict['route'][pos]):
                     current_road_pos = pos
             for pos in range(len(now_dict['route'])):
                 road_id = now_dict['route'][pos]
-                if (pos == current_road_pos):
+                if(pos == current_road_pos):
                     tt_f_r += (roads[road_id]['length'] -
                                now_dict['distance']) / roads[road_id]['speed_limit']
-                elif (pos > current_road_pos):
+                elif(pos > current_road_pos):
                     tt_f_r += roads[road_id]['length'] / roads[road_id]['speed_limit']
             vehicles[vehicle_id]['tt_f_r'] = tt_f_r
             vehicles[vehicle_id]['delay_index'] = (tt + tt_f_r) / tt_ff
@@ -250,7 +248,7 @@ def process_delay_index(lines, roads, step):
     delay_index_list = []
     for vehicle_id, dict in vehicles.items():
         # res = max(res, dict['delay_index'])
-        if ('delay_index' in dict.keys()):
+        if('delay_index' in dict.keys()):
             delay_index_list.append(dict['delay_index'])
 
     # 'delay_index_list' contains all vehicles' delayindex at this snapshot.
@@ -258,8 +256,7 @@ def process_delay_index(lines, roads, step):
     # 'vehicles' is a dict contains vehicle infomation at this snapshot
     return delay_index_list, vehicle_list, vehicles
 
-
-def process_score(log_path, roads, step, scores_dir):
+def process_score(log_path,roads,step,scores_dir):
     result_write = {
         "data": {
             "total_served_vehicles": -1,
@@ -277,10 +274,10 @@ def process_score(log_path, roads, step, scores_dir):
 
         result_write['data']['total_served_vehicles'] = v_len
         result_write['data']['delay_index'] = delay_index
-        with open(scores_dir / 'scores {}.json'.format(step), 'w') as f_out:
-            json.dump(result_write, f_out, indent=2)
+        with open(scores_dir / 'scores {}.json'.format(step), 'w' ) as f_out:
+            json.dump(result_write,f_out,indent= 2)
 
-    return result_write['data']['total_served_vehicles'], result_write['data']['delay_index']
+    return result_write['data']['total_served_vehicles'],result_write['data']['delay_index']
 
 
 def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
@@ -307,13 +304,16 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
     intersections, roads, agents = process_roadnet(roadnet_path)
 
     observations, infos = env.reset()
+
+    print("observations:", len(observations))
+
     agent_id_list = []
     for k in observations:
         agent_id_list.append(int(k.split('_')[0]))
     agent_id_list = list(set(agent_id_list))
     agent = agent_spec[scenario[0]]
     agent.load_agent_list(agent_id_list)
-    agent.load_roadnet(intersections, roads, agents)
+    agent.load_roadnet(intersections,roads,agents)
     # Here begins the code for training
 
     total_decision_num = 0
@@ -324,9 +324,14 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
     # agent.load_model(args.save_dir, 199)
 
     # The main loop
+    prev_prob_act = None
+
+    gamma = 0.98
+    eps = 0.2
     for e in range(args.episodes):
         print("----------------------------------------------------{}/{}".format(e, args.episodes))
         last_obs = env.reset()
+
         episodes_rewards = {}
         for agent_id in agent_id_list:
             episodes_rewards[agent_id] = 0
@@ -335,7 +340,6 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
         # Begins one simulation.
         i = 0
         while i < args.steps:
-            if i % 20 == 0: print(f"Epoch [{e}], iter: [{i}]")
             if i % args.action_interval == 0:
                 if isinstance(last_obs, tuple):
                     observations = last_obs[0]
@@ -347,32 +351,20 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
 
                 observations_for_agent = {}
                 for key, val in observations.items():
-                    observations_agent_id = int(key.split('_')[0])
-                    observations_feature = "_".join(key.split('_')[1:])
-                    if (observations_agent_id not in observations_for_agent.keys()):
-                        observations_for_agent[observations_agent_id] = {}
-                    val = val[1:]
-                    while len(val) < agent.ob_length:
-                        val.append(0)
-                    observations_for_agent[observations_agent_id][observations_feature] = val
-
-                # for FRAP observation
-                if MODEL_NAME == 'FRAP':
-                    observations_frap = {}
-                    for agent_id in agent_id_list:
-                        lane_vehicle_num = observations_for_agent[agent_id]['lane_vehicle_num']
-                        pressures = []
-                        for j in range(8):
-                            pressure_j = lane_vehicle_num[FRAP_intersections[j][1]] - lane_vehicle_num[
-                                FRAP_intersections[j][0]]
-                            pressures.append([pressure_j, Phase_to_FRAP_Phase[agent.last_change_step[agent_id]][j]])
-                        observations_frap[agent_id] = pressures
+                    tmp = key.split('_')[-1]
+                    if "num" in tmp:
+                        observations_agent_id = int(key.split('_')[0])
+                        val = val[1:]
+                        observations_for_agent[observations_agent_id] = val
 
                 # Get the action, note that we use act_() for training.
-                if MODEL_NAME == 'MLP':
-                    actions = agent.act_(observations_for_agent)
-                else:
-                    actions = agent.act_(observations_frap)
+                #actions = agent.act_(observations_for_agent)
+                actions, probs = agent.act_(observations_for_agent)
+
+                prob_act = {}
+                for key in probs.keys():
+                    prob_act[key] = torch.log(probs[key])
+
 
                 rewards_list = {}
 
@@ -381,83 +373,106 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
                     actions_[key] = actions[key] + 1
 
                 # We keep the same action for a certain time
+                #tmp_rw = 0
                 for _ in range(args.action_interval):
                     # print(i)
                     i += 1
 
                     # Interacts with the environment and get the reward.
-                    # print("stepping")
                     observations, rewards, dones, infos = env.step(actions_)
-                    # print("after step")
                     for agent_id in agent_id_list:
                         lane_vehicle = observations["{}_lane_vehicle_num".format(agent_id)]
                         pressure = (np.sum(lane_vehicle[13: 25]) - np.sum(lane_vehicle[1: 13])) / args.action_interval
-
-                        lane_vehicle_speed = observations["{}_lane_speed".format(agent_id)]
                         if agent_id in rewards_list:
                             rewards_list[agent_id] += pressure
                         else:
                             rewards_list[agent_id] = pressure
+                        #print("pressure",pressure)
+                        #tmp_rw += pressure
+                #print("epoch ",e,"time ",i,"tmp_reward ",tmp_rw)
+
 
                 rewards = rewards_list
+
                 new_observations_for_agent = {}
 
                 # Get next state.
 
-                for key, val in observations.items():
-                    observations_agent_id = int(key.split('_')[0])
-                    observations_feature = "_".join(key.split('_')[1:])
-                    if (observations_agent_id not in new_observations_for_agent.keys()):
-                        new_observations_for_agent[observations_agent_id] = {}
-                    val = val[1:]
-                    while len(val) < agent.ob_length:
-                        val.append(0)
-                    new_observations_for_agent[observations_agent_id][observations_feature] = val
+                # for key, val in observations.items():
+                #     observations_agent_id = int(key.split('_')[0])
+                #     observations_feature = key.split('_')[1]
+                #     if (observations_agent_id not in new_observations_for_agent.keys()):
+                #         new_observations_for_agent[observations_agent_id] = {}
+                #     val = val[1:]
+                #     while len(val) < agent.ob_length:
+                #         val.append(0)
+                #     new_observations_for_agent[observations_agent_id][observations_feature] = val
 
-                if MODEL_NAME == 'FRAP':
-                    new_observations_frap = {}
-                    for agent_id in agent_id_list:
-                        pressures = []
-                        lane_vehicle_num = new_observations_for_agent[agent_id]['lane_vehicle_num']
-                        for j in range(8):
-                            pressure_j = lane_vehicle_num[FRAP_intersections[j][1]] - lane_vehicle_num[
-                                FRAP_intersections[j][0]]
-                            pressures.append([pressure_j, Phase_to_FRAP_Phase[agent.last_change_step[agent_id]][j]])
-                        new_observations_frap[agent_id] = pressures
+                for key, val in observations.items():
+
+                    tmp = key.split('_')[-1]
+                    if "num" in tmp:
+                        observations_agent_id = int(key.split('_')[0])
+
+                        if (observations_agent_id not in new_observations_for_agent.keys()):
+                            new_observations_for_agent[observations_agent_id] = {}
+                        val = val[1:]
+                        new_observations_for_agent[observations_agent_id] = val
+
+                advantage = {}
+                for key in probs.keys():
+                    advantage[key] = rewards[key] + gamma * agent.critic(
+                        list_to_tensor(new_observations_for_agent[key])) - agent.critic(
+                        list_to_tensor(observations_for_agent[key]))
+
+                critic_loss = {}
+                for key in advantage.keys():
+                    critic_loss[key] = advantage[key].pow(2).mean()
+
+                for agent_id in agent_id_list:
+                    # agent.remember(observations_for_agent[agent_id]['lane'], actions[agent_id], rewards[agent_id],
+                    #                new_observations_for_agent[agent_id]['lane'])
+                    episodes_rewards[agent_id] += rewards[agent_id]
 
                 # Remember (state, action, reward, next_state) into memory buffer.
                 for agent_id in agent_id_list:
-                    if MODEL_NAME == 'MLP':
-                        if with_Speed:
-                            agent.remember(np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
-                                                           observations_for_agent[agent_id]['lane_speed']]),
-                                           actions[agent_id],
-                                           rewards[agent_id],
-                                           np.concatenate([new_observations_for_agent[agent_id]['lane_vehicle_num'],
-                                                           new_observations_for_agent[agent_id]['lane_speed']]))
-                        else:
-                            agent.remember(observations_for_agent[agent_id]['lane_vehicle_num'], actions[agent_id],
-                                           rewards[agent_id],
-                                           new_observations_for_agent[agent_id]['lane_vehicle_num'])
-                    else:
-                        agent.remember(observations_frap[agent_id], actions[agent_id],
-                                       rewards[agent_id],
-                                       new_observations_frap[agent_id])
-
-
+                    # agent.remember(observations_for_agent[agent_id]['lane'], actions[agent_id], rewards[agent_id],
+                    #                new_observations_for_agent[agent_id]['lane'])
                     episodes_rewards[agent_id] += rewards[agent_id]
                 episodes_decision_num += 1
                 total_decision_num += 1
 
-                last_obs = observations
+                if prev_prob_act:
+                    actor_loss = policy_loss(prev_prob_act, prob_act, advantage, eps)
+                    # print("this is actor_loss", actor_loss)
+                    #print("actor")
+                    agent.act_replay(actor_loss)
+                    #print("critic")
+                    agent.cri_replay(critic_loss)
+
+                prev_prob_act = get_old(prob_act)
+
+                # for agent_id in agent_id_list:
+                #     agent.remember(observations_for_agent[agent_id]['lane'], actions[agent_id], rewards[agent_id],
+                #                    new_observations_for_agent[agent_id]['lane'])
+                #     episodes_rewards[agent_id] += rewards[agent_id]
+                # episodes_decision_num += 1
+                # total_decision_num += 1
+
+                #last_obs = observations
 
             # Update the network
-            if total_decision_num > agent.learning_start and total_decision_num % agent.update_model_freq == agent.update_model_freq - 1:
-                agent.replay()
-            if total_decision_num > agent.learning_start and total_decision_num % agent.update_target_model_freq == agent.update_target_model_freq - 1:
-                agent.update_target_network()
-            if all(dones.values()):
-                break
+            # if total_decision_num > agent.learning_start and total_decision_num % agent.update_model_freq == agent.update_model_freq - 1:
+            #     agent.replay()
+            # if total_decision_num > agent.learning_start and total_decision_num % agent.update_target_model_freq == agent.update_target_model_freq - 1:
+            #     agent.update_target_network()
+            # if all(dones.values()):
+            #     break
+        total_reward = 0
+        for key in episodes_rewards.keys():
+            total_reward += episodes_rewards[key]
+        print("Epoch ",e,"reward ",total_reward)
+
         if e % args.save_rate == args.save_rate - 1:
             if not os.path.exists(args.save_dir):
                 os.makedirs(args.save_dir)
@@ -470,7 +485,7 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
                                                           episodes_rewards[agent_id] / episodes_decision_num))
 
 
-def run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, scores_dir, threshold):
+def run_simulation(agent_spec, simulator_cfg_file, gym_cfg,metric_period,scores_dir,threshold):
     logger.info("\n")
     logger.info("*" * 40)
 
@@ -481,8 +496,8 @@ def run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, score
         'CBEngine-v0',
         simulator_cfg_file=simulator_cfg_file,
         thread_num=1,
-        gym_dict=gym_configs,
-        metric_period=metric_period
+        gym_dict = gym_configs,
+        metric_period = metric_period
     )
     scenario = [
         'test'
@@ -510,31 +525,31 @@ def run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, score
     log_path = Path(simulator_configs['report_log_addr'])
     sim_start = time.time()
 
-    tot_v = -1
+    tot_v  = -1
     d_i = -1
     while not done:
         actions = {}
-        step += 1
+        step+=1
         all_info = {
-            'observations': observations,
-            'info': infos
+            'observations':observations,
+            'info':infos
         }
         actions = agent.act(all_info)
         observations, rewards, dones, infos = env.step(actions)
-        if (step * 10 % metric_period == 0):
+        if(step * 10 % metric_period == 0):
             try:
-                tot_v, d_i = process_score(log_path, roads, step * 10 - 1, scores_dir)
+                tot_v , d_i = process_score(log_path,roads,step*10-1,scores_dir)
             except Exception as e:
                 print(e)
                 print('Error in process_score. Maybe no log')
                 continue
-        if (d_i > threshold):
+        if(d_i > threshold):
             break
         for agent_id in agent_id_list:
-            if (dones[agent_id]):
+            if(dones[agent_id]):
                 done = True
     sim_end = time.time()
-    logger.info("simulation cost : {}s".format(sim_end - sim_start))
+    logger.info("simulation cost : {}s".format(sim_end-sim_start))
     # read log file
 
     # result = {}
@@ -587,7 +602,7 @@ def run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, score
     # last_d_i = np.mean(list(delay_index_temp.values()))
     # eval_end = time.time()
     # logger.info("scoring cost {}s".format(eval_end-eval_start))
-    return tot_v, d_i
+    return tot_v,  d_i
 
 
 def format_exception(grep_word):
@@ -607,7 +622,6 @@ def format_exception(grep_word):
     exception_str = exception_str[:-1]
 
     return exception_str
-
 
 if __name__ == "__main__":
     # arg parse
@@ -654,17 +668,16 @@ if __name__ == "__main__":
 
     parser.add_argument('--thread', type=int, default=8, help='number of threads')
     parser.add_argument('--steps', type=int, default=360, help='number of steps')
-    parser.add_argument('--action_interval', type=int, default=2, help='how often agent make decisions')
+    parser.add_argument('--action_interval', type=int, default=20, help='how often agent make decisions')
     parser.add_argument('--episodes', type=int, default=100, help='training episodes')
 
     parser.add_argument('--save_model', action="store_true", default=False)
     parser.add_argument('--load_model', action="store_true", default=False)
     parser.add_argument("--save_rate", type=int, default=5,
                         help="save model once every time this many episodes are completed")
-    parser.add_argument('--save_dir', type=str, default="model/dqn_warm_up",
+    parser.add_argument('--save_dir', type=str, default="model/ppo",
                         help='directory in which model should be saved')
-    parser.add_argument('--log_dir', type=str, default="cmd_log/dqn_warm_up",
-                        help='directory in which logs should be saved')
+    parser.add_argument('--log_dir', type=str, default="cmd_log/dqn_warm_up", help='directory in which logs should be saved')
 
     # result to be written in out/result.json
     result = {

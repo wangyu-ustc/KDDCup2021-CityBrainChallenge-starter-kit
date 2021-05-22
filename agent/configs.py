@@ -1,3 +1,5 @@
+import numpy as np
+
 dic_agent_conf={
         'att_regularization': False,
         'rularization_rate': 0.03,
@@ -57,3 +59,40 @@ dic_traffic_env_conf={
 dic_path = {
     "PATH_TO_MODEL": "./"
 }
+
+
+# MODEL_NAME = 'MLP'
+MODEL_NAME = 'MLP'
+with_Speed = False
+
+FRAP_intersections = [[11, 17],
+                      [4, 19],
+                      [2, 20],
+                      [7, 22],
+                      [5, 23],
+                      [10, 13],
+                      [8, 14],
+                      [1, 18]]
+Phase_to_FRAP_Phase = {
+    0: [0, 0, 0, 1, 0, 0, 0, 1],
+    1: [0, 0, 1, 0, 0, 0, 1, 0],
+    2: [0, 1, 0, 0, 0, 1, 0, 0],
+    3: [1, 0, 0, 0, 1, 0, 0, 0],
+    4: [0, 0, 1, 0, 0, 0, 0, 1],
+    5: [0, 1, 0, 0, 1, 0, 0, 0],
+    6: [0, 0, 0, 1, 0, 0, 1, 0],
+    7: [1, 0, 0, 0, 0, 1, 0, 0]
+}
+
+relations = []
+for p1 in range(8):
+    zeros = [0] * 7
+    count = 0
+    for p2 in range(8):
+        if p1 == p2: continue
+        if len(set(np.array(Phase_to_FRAP_Phase[p1]) + np.array(Phase_to_FRAP_Phase[p2]))) == 3:
+            zeros[count] = 1
+        count += 1
+    relations.append(zeros)
+relations = np.array(relations).reshape((1, 8, 7))
+print(relations)
