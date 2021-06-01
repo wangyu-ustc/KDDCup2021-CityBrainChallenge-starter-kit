@@ -4,35 +4,21 @@ In this file, you should implement your `AgentSpec` instance, and **must** name 
 As an example, this file offers a standard implementation.
 """
 
-import pickle
+import os
+
 import torch
 import torch.nn.functional as F
-from torch.distributions.categorical import Categorical
-import os
+
 path = os.path.split(os.path.realpath(__file__))[0]
 import sys
 sys.path.append(path)
 import random
-from model import BaseModel, FRAPModel
 
-import gym
-
-from pathlib import Path
-import pickle
-import gym
-
-import tensorflow as tf
-import keras
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.optimizers import Adam, RMSprop, SGD
 import os
 from collections import deque
 from configs import *
 import numpy as np
-from keras.layers.merge import concatenate
-from keras.layers import Input, Dense, Conv2D, Flatten
-from keras.models import Model
+
 
 # contains all of the intersections
 
@@ -51,7 +37,7 @@ class TestAgent():
         self.phase_passablelane = {}
 
         self.memory = deque(maxlen=2000)
-        self.learning_start = 2000
+        self.learning_start = 0
         self.update_model_freq = 1
         self.update_target_model_freq = 20
 
@@ -65,16 +51,6 @@ class TestAgent():
 
         self.action_space = 8
 
-        self.model = self._build_model()
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
-        # Remember to uncomment the following lines when submitting, and submit your model file as well.
-        # path = os.path.split(os.path.realpath(__file__))[0]
-        # self.load_model(path, 99)
-
-        # self.target_model = self._build_model()
-        # self.update_target_network()
-
-
 
     ################################
     # don't modify this function.
@@ -83,6 +59,8 @@ class TestAgent():
         self.agent_list = agent_list
         self.now_phase = dict.fromkeys(self.agent_list,1)
         self.last_change_step = dict.fromkeys(self.agent_list,0)
+        self.remain_stable = {agent_id: 0 for agent_id in self.agent_list}
+        self.stable_action_steps = {agent_id: [] for agent_id in self.agent_list}
     # intersections[key_id] = {
     #     'have_signal': bool,
     #     'end_roads': list of road_id. Roads that end at this intersection. The order is random.
@@ -126,12 +104,9 @@ class TestAgent():
                 #     pressures.append([pressure_i, Phase_to_FRAP_Phase[self.last_change_step[agent_id]][i]])
 
                 action = self.get_action(observations_for_agent[agent_id])
-                if isinstance(action, int):
-                    self.last_change_step[agent_id] = action
-                    actions[agent_id] = torch.tensor(action)
-                else:
-                    self.last_change_step[agent_id] = action.item()
-                    actions[agent_id] = action
+                if isinstance(action, int): self.last_change_step[agent_id] = action
+                else: self.last_change_step[agent_id] = action.item()
+                actions[agent_id] = action
 
         return actions
 
@@ -150,29 +125,55 @@ class TestAgent():
             observations_for_agent[observations_agent_id][observations_feature] = val[1:]
 
         # Get actions
-        if MODEL_NAME == 'MLP':
-            for agent in self.agent_list:
-                self.epsilon = 0
-                actions[agent] = self.get_action(observations_for_agent[agent]['lane_vehicle_num']) + 1
+        if len(self.last_change_step) == 0:
+
+            for agent_id in self.agent_list:
+                actions[agent_id] = self.get_action_based_on_pressure(observations_for_agent[agent_id]) + 1
         else:
             for agent_id in self.agent_list:
-                lane_vehicle_num = observations_for_agent[agent_id]['lane_vehicle_num']
-                pressures = []
-                for i in range(8):
-                    pressure_i = lane_vehicle_num[FRAP_intersections[i][1]] - lane_vehicle_num[FRAP_intersections[i][0]]
-                    pressures.append([pressure_i, Phase_to_FRAP_Phase[self.last_change_step[agent_id]][i]])
+                self.remain_stable[agent_id] += 10
 
-                action = self.get_action(pressures) + 1
-                actions[agent_id] = action
+                if self.remain_stable[agent_id] < 30:
+                    actions[agent_id] = self.last_change_step[agent_id]
+                else:
+                    actions[agent_id] = self.get_action_based_on_pressure(observations_for_agent[agent_id]) + 1
+
+                if actions[agent_id] != self.last_change_step[agent_id]:
+                    self.stable_action_steps[agent_id].append(self.remain_stable[agent_id])
+                    self.remain_stable[agent_id] = 0
+
+        self.last_change_step = actions
 
         return actions
+
+    def get_action_based_on_pressure(self, ob):
+        pressures = []
+        lane_vehicle_num = ob['lane_vehicle_num']
+        for j in range(8):
+            pressure_j = lane_vehicle_num[FRAP_intersections[j][1]] - lane_vehicle_num[
+                FRAP_intersections[j][0]]
+            pressures.append(pressure_j)
+
+        phase_matrix = []
+        for key in Phase_to_FRAP_Phase.keys():
+            phase_matrix.append(Phase_to_FRAP_Phase[key])
+        phase_matrix = np.stack(phase_matrix)
+
+        print(phase_matrix)
+        print(pressures)
+
+        probs = np.matmul(phase_matrix, np.array(pressures).reshape(-1, 1))
+        return np.argmax(probs)
+
+
+
 
     def get_action(self, ob):
 
         # The epsilon-greedy action selector.
 
         if np.random.rand() <= self.epsilon:
-            return torch.tensor(self.sample()).cuda()
+            return self.sample()
         ob = torch.tensor(ob, dtype=torch.float32)
         if MODEL_NAME == 'MLP':
             act_values = self.model(ob.reshape(1, -1).cuda())
@@ -180,25 +181,11 @@ class TestAgent():
             act_values = self.model(ob.reshape(1, -1).cuda())
         # ob = self._reshape_ob(ob)
         # act_values = self.model.predict([ob])
-        self.m = Categorical(torch.softmax(act_values, -1))
-
-        return self.m.sample()
+        return torch.argmax(act_values[0]).item()
 
     def sample(self):
         # Random samples
         return np.random.randint(0, self.action_space)
-
-    def _build_model(self):
-
-        # Neural Net for Deep-Q learning Model
-        if MODEL_NAME == 'MLP':
-            return BaseModel(input_dim=self.ob_length, output_dim=self.action_space).cuda()
-        else:
-            return FRAPModel(relations=relations)
-
-    def update_target_network(self):
-        self.target_model.load_state_dict(self.model.state_dict())
-
     def remember(self, ob, action, reward, next_ob):
         self.memory.append((ob, action, reward, next_ob))
 
@@ -209,9 +196,10 @@ class TestAgent():
             minibatch = self.memory
         else:
             minibatch = random.sample(self.memory, self.batch_size)
+
         obs, actions, rewards, next_obs, = [np.stack(x) for x in np.array(minibatch).T]
         output = self.target_model(torch.tensor(next_obs, dtype=torch.float32).cuda())
-        target = rewards + self.gamma * np.amax(output.detach().numpy(), axis=1)
+        target = rewards + self.gamma * np.amax(output.detach().cpu().numpy(), axis=1)
         target_f = self.model(torch.tensor(obs, dtype=torch.float32).cuda()).detach()
 
         for i, action in enumerate(actions):
@@ -229,13 +217,13 @@ class TestAgent():
             self.epsilon *= self.epsilon_decay
 
     def load_model(self, dir="model/dqn", step=0):
-        name = "dqn_agent_{}.ckpt".format(step)
+        name = "qr_dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         print("load from " + model_name)
         self.model.load_state_dict(torch.load(model_name))
 
     def save_model(self, dir="model/dqn", step=0):
-        name = "dqn_agent_{}.ckpt".format(step)
+        name = "qr_dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         torch.save(self.model.state_dict(), model_name)
 

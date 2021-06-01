@@ -83,7 +83,7 @@ def load_agent_submission(submission_dir: Path):
 
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent_PC as agent_submission
+    import agent_PG as agent_submission
     # import agent_DQN_pt as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
@@ -431,10 +431,11 @@ def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
             agent.save_model(args.save_dir, e)
         logger.info(
             "episode:{}/{}, average travel time:{}".format(e, args.episodes, env.eng.get_average_travel_time()))
+
+        rewards = 0
         for agent_id in agent_id_list:
-            logger.info(
-                "agent:{}, mean_episode_reward:{}".format(agent_id,
-                                                          episodes_rewards[agent_id] / episodes_decision_num))
+            rewards += episodes_rewards[agent_id] / episodes_decision_num
+        logger.info("episode:{}/{}, Total Rewards:{}".format(e, args.episodes, rewards))
 
 
 def run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, scores_dir, threshold):
@@ -587,7 +588,7 @@ if __name__ == "__main__":
         "--input_dir",
         help="The path to the directory containing the reference "
              "data and user submission data.",
-        default=None,
+        default='agent',
         type=str,
     )
 
@@ -595,21 +596,21 @@ if __name__ == "__main__":
         "--output_dir",
         help="The path to the directory where the submission's "
              "scores.txt file will be written to.",
-        default=None,
+        default='out',
         type=str,
     )
 
     parser.add_argument(
         "--sim_cfg",
         help='The path to the simulator cfg',
-        default=None,
+        default='cfg/simulator.cfg',
         type=str
     )
 
     parser.add_argument(
         "--metric_period",
         help="period of scoring",
-        default=3600,
+        default=200,
         type=int
     )
     parser.add_argument(
@@ -628,9 +629,9 @@ if __name__ == "__main__":
     parser.add_argument('--load_model', action="store_true", default=False)
     parser.add_argument("--save_rate", type=int, default=5,
                         help="save model once every time this many episodes are completed")
-    parser.add_argument('--save_dir', type=str, default="model/dqn_warm_up",
+    parser.add_argument('--save_dir', type=str, default="model/PG",
                         help='directory in which model should be saved')
-    parser.add_argument('--log_dir', type=str, default="cmd_log/dqn_warm_up",
+    parser.add_argument('--log_dir', type=str, default="cmd_log/PG",
                         help='directory in which logs should be saved')
 
     # result to be written in out/result.json

@@ -50,7 +50,7 @@ class TestAgent():
         self.phase_passablelane = {}
 
         self.memory = deque(maxlen=2000)
-        self.learning_start = 2000
+        self.learning_start = 0
         self.update_model_freq = 1
         self.update_target_model_freq = 20
 
@@ -170,12 +170,12 @@ class TestAgent():
             return self.sample()
         ob = torch.tensor(ob, dtype=torch.float32)
         if MODEL_NAME == 'MLP':
-            act_values = self.model(ob.reshape(1, -1))
+            act_values = self.model(ob.reshape(1, -1).cuda())
         else:
-            act_values = self.model(ob.reshape(1, -1))
+            act_values = self.model(ob.reshape(1, -1).cuda())
         # ob = self._reshape_ob(ob)
         # act_values = self.model.predict([ob])
-        return torch.argmax(act_values[0])
+        return torch.argmax(act_values[0]).item()
 
     def sample(self):
         # Random samples
@@ -185,7 +185,7 @@ class TestAgent():
 
         # Neural Net for Deep-Q learning Model
         if MODEL_NAME == 'MLP':
-            return BaseModel(input_dim=self.ob_length, output_dim=self.action_space)
+            return BaseModel(input_dim=self.ob_length, output_dim=self.action_space).cuda()
         else:
             return FRAPModel(relations=relations)
 
@@ -202,15 +202,16 @@ class TestAgent():
             minibatch = self.memory
         else:
             minibatch = random.sample(self.memory, self.batch_size)
+
         obs, actions, rewards, next_obs, = [np.stack(x) for x in np.array(minibatch).T]
-        output = self.target_model(torch.tensor(next_obs, dtype=torch.float32))
-        target = rewards + self.gamma * np.amax(output.detach().numpy(), axis=1)
-        target_f = self.model(torch.tensor(obs, dtype=torch.float32)).detach()
+        output = self.target_model(torch.tensor(next_obs, dtype=torch.float32).cuda())
+        target = rewards + self.gamma * np.amax(output.detach().cpu().numpy(), axis=1)
+        target_f = self.model(torch.tensor(obs, dtype=torch.float32).cuda()).detach()
 
         for i, action in enumerate(actions):
             target_f[i][action] = target[i]
 
-        pred_target = self.model(torch.tensor(obs, dtype=torch.float32))
+        pred_target = self.model(torch.tensor(obs, dtype=torch.float32).cuda())
         loss = F.mse_loss(pred_target, target_f)
         self.optimizer.zero_grad()
         loss.backward()
@@ -222,13 +223,13 @@ class TestAgent():
             self.epsilon *= self.epsilon_decay
 
     def load_model(self, dir="model/dqn", step=0):
-        name = "qr_dqn_agent_{}.ckpt".format(step)
+        name = "dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         print("load from " + model_name)
         self.model.load_state_dict(torch.load(model_name))
 
     def save_model(self, dir="model/dqn", step=0):
-        name = "qr_dqn_agent_{}.ckpt".format(step)
+        name = "dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         torch.save(self.model.state_dict(), model_name)
 

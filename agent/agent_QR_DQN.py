@@ -52,7 +52,7 @@ class TestAgent():
         self.phase_passablelane = {}
 
         self.memory = deque(maxlen=2000)
-        self.learning_start = 2000
+        self.learning_start = 200
         self.update_model_freq = 1
         self.update_target_model_freq = 20
 
@@ -66,11 +66,30 @@ class TestAgent():
 
         self.action_space = 8
 
+        self.rotate_matrix = torch.zeros([8, 8])
+        self.inverse_clockwise_mapping = {
+            1: 3,
+            2: 4,
+            3: 1,
+            4: 2,
+            5: 8,
+            6: 5,
+            7: 6,
+            8: 7
+        }
+
+        self.clockwise_mapping = {
+            y: x for x,y in self.inverse_clockwise_mapping.items()
+        }
+
+        for i in range(8):
+            self.rotate_matrix[i][self.inverse_clockwise_mapping[i+1]-1] = 1
+
         self.model = self._build_model()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         # Remember to uncomment the following lines when submitting, and submit your model file as well.
-        path = os.path.split(os.path.realpath(__file__))[0]
-        self.load_model(path, 99)
+        # path = os.path.split(os.path.realpath(__file__))[0]
+        # self.load_model(path, 99)
         self.target_model = self._build_model()
         self.update_target_network()
 
@@ -113,6 +132,12 @@ class TestAgent():
         if MODEL_NAME == 'MLP':
             actions = {}
             for agent_id in self.agent_list:
+
+                if -1 in self.agents[agent_id]:
+                    while -1 in self.agents[agent_id][:4]:
+                        pass
+
+
                 action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
                 actions[agent_id] = action
             return actions
@@ -161,13 +186,12 @@ class TestAgent():
         # The epsilon-greedy action selector.
         if np.random.rand() <= self.epsilon:
             return self.sample()
-
         ob = torch.tensor(ob, dtype=torch.float32)
 
         if MODEL_NAME == 'MLP':
-            act_values =  self.model(ob.reshape(1, -1)).mean(dim=2)
+            act_values =  self.model(ob.reshape(1, -1).cuda()).mean(dim=2)
         else:
-            act_values = self.model(ob)
+            act_values = self.model(ob.cuda())
         # ob = self._reshape_ob(ob)
         # act_values = self.model.predict([ob])
         return torch.argmax(act_values[0]).item()
@@ -181,9 +205,9 @@ class TestAgent():
         # Neural Net for Deep-Q learning Model
         # return BaseModel(input_dim=self.ob_length, output_dim=self.action_space)
         if with_Speed:
-            return Base_QR_DQN_Model(input_dim=self.ob_length * 2, output_dim=self.action_space, n_quant=N_QUANT)
+            return Base_QR_DQN_Model(input_dim=self.ob_length * 2, output_dim=self.action_space, n_quant=N_QUANT).cuda()
         else:
-            return Base_QR_DQN_Model(input_dim=self.ob_length, output_dim=self.action_space, n_quant=N_QUANT)
+            return Base_QR_DQN_Model(input_dim=self.ob_length, output_dim=self.action_space, n_quant=N_QUANT).cuda()
 
 
     def update_target_network(self):
@@ -191,6 +215,49 @@ class TestAgent():
 
     def remember(self, ob, action, reward, next_ob):
         self.memory.append((ob, action, reward, next_ob))
+
+    def obs_clock_wise_rotate(self, obs):
+        new_obs = obs.clone()
+        new_obs[3: 12] = obs[0: 9]
+        new_obs[0: 3] = obs[9: 12]
+        new_obs[15: 24] = obs[12: 21]
+        new_obs[12: 15] = obs[21: 24]
+        return new_obs
+
+    def action_clock_wise_rotate(self, action):
+        # action.shape: [bsz, n_actions, k] k = N_QUANT for QR-DQN, and k = 1 for DQN
+        return torch.einsum('ij,bjn->bin', (self.rotate_matrix, action.cpu())).cuda()
+
+    def QR_DQN_loss(self, obs, actions, rewards, next_obs, b_w, b_idxes):
+        q_eval = self.model(obs)  # (m, N_ACTIONS, N_QUANT)
+        bsz = q_eval.shape[0]
+        q_eval = torch.stack([q_eval[i].index_select(0, actions[i]) for i in range(bsz)]).squeeze(1)
+        # (m, N_QUANT)
+        q_eval = q_eval.unsqueeze(2)  # (m, N_QUANT, 1)
+        # note that dim 1 is for present quantile, dim 2 is for next quantile
+
+        # get next state value
+        q_next = self.target_model(next_obs).detach()  # (m, N_ACTIONS, N_QUANT)
+        best_actions = q_next.mean(dim=2).argmax(dim=1)  # (m)
+        q_next = torch.stack([q_next[i].index_select(0, best_actions[i]) for i in range(bsz)]).squeeze(1)
+        # (m, N_QUANT)
+        q_target = rewards.unsqueeze(1) + self.gamma * q_next
+        # (m, N_QUANT)
+        q_target = q_target.unsqueeze(1)  # (m , 1, N_QUANT)
+
+        # quantile Huber loss
+        u = q_target.detach() - q_eval  # (m, N_QUANT, N_QUANT)
+        tau = torch.FloatTensor(QUANTS_TARGET).view(1, -1, 1).cuda()  # (1, N_QUANT, 1)
+        # note that tau is for present quantile
+        weight = torch.abs(tau - u.le(0.).float())  # (m, N_QUANT, N_QUANT)
+        loss = F.smooth_l1_loss(q_eval, q_target.detach(), reduction='none')
+        # (m, N_QUANT, N_QUANT)
+        loss = torch.mean(weight * loss, dim=1).mean(dim=1)
+
+        # calc importance weighted loss
+        b_w = torch.Tensor(b_w).cuda()
+        loss = torch.mean(b_w * loss)
+        return loss
 
     def replay(self):
         # Update the Q network from the memory buffer.
@@ -201,54 +268,62 @@ class TestAgent():
             minibatch = random.sample(self.memory, self.batch_size)
         obs, actions, rewards, next_obs, = [np.stack(x) for x in np.array(minibatch).T]
         b_w, b_idxes = np.ones_like(rewards), None
+        obs, actions, rewards, next_obs = torch.FloatTensor(obs).cuda(), torch.LongTensor(actions).cuda(), \
+                                          torch.FloatTensor(rewards).cuda(), torch.FloatTensor(next_obs).cuda()
+        loss = self.QR_DQN_loss(obs, actions, rewards, next_obs, b_w, b_idxes)
+        actions_1 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions.flatten()]).reshape(actions.shape).cuda()
+        actions_2 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions_1.flatten()]).reshape(actions.shape).cuda()
+        actions_3 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions_2.flatten()]).reshape(actions.shape).cuda()
 
-        obs, actions, rewards, next_obs = torch.FloatTensor(obs), torch.LongTensor(actions), torch.FloatTensor(rewards), torch.FloatTensor(next_obs)
-        q_eval = self.model(obs)  # (m, N_ACTIONS, N_QUANT)
-        bsz = q_eval.shape[0]
-        q_eval = torch.stack([q_eval[i].index_select(0, actions[i]) for i in range(bsz)]).squeeze(1)
-        # (m, N_QUANT)
-        q_eval = q_eval.unsqueeze(2) # (m, N_QUANT, 1)
-        # note that dim 1 is for present quantile, dim 2 is for next quantile
+        obs_1 = self.obs_clock_wise_rotate(obs).detach()
+        obs_2 = self.obs_clock_wise_rotate(obs_1).detach()
+        obs_3 = self.obs_clock_wise_rotate(obs_2).detach()
 
-        # get next state value
-        q_next = self.target_model(next_obs).detach() # (m, N_ACTIONS, N_QUANT)
-        best_actions = q_next.mean(dim=2).argmax(dim=1) # (m)
-        q_next = torch.stack([q_next[i].index_select(0, best_actions[i]) for i in range(bsz)]).squeeze(1)
-        # (m, N_QUANT)
-        q_target = rewards.unsqueeze(1) + self.gamma * q_next
-        # (m, N_QUANT)
-        q_target = q_target.unsqueeze(1)  # (m , 1, N_QUANT)
+        next_obs_1 = self.obs_clock_wise_rotate(next_obs).detach()
+        next_obs_2 = self.obs_clock_wise_rotate(next_obs_1).detach()
+        next_obs_3 = self.obs_clock_wise_rotate(next_obs_2).detach()
 
-        # quantile Huber loss
-        u = q_target.detach() - q_eval # (m, N_QUANT, N_QUANT)
-        tau = torch.FloatTensor(QUANTS_TARGET).view(1, -1, 1) # (1, N_QUANT, 1)
-        # note that tau is for present quantile
-        weight = torch.abs(tau - u.le(0.).float()) # (m, N_QUANT, N_QUANT)
-        loss = F.smooth_l1_loss(q_eval, q_target.detach(), reduction='none')
-        # (m, N_QUANT, N_QUANT)
-        loss = torch.mean(weight * loss, dim=1).mean(dim=1)
+        loss += self.QR_DQN_loss(obs_1, actions_1, rewards, next_obs_1, b_w, b_idxes)
+        loss += self.QR_DQN_loss(obs_2, actions_2, rewards, next_obs_2, b_w, b_idxes)
+        loss += self.QR_DQN_loss(obs_3, actions_3, rewards, next_obs_3, b_w, b_idxes)
 
-        # calc importance weighted loss
-        b_w = torch.Tensor(b_w)
-        loss = torch.mean(b_w * loss)
+        # self.optimizer.zero_grad()
+        # loss.backward()
+        # self.optimizer.step()
+        # self.model.fit([obs], target_f, epochs=1, verbose=0)
+        # unsupervised learning
+        # q_eval = self.model(obs).detach()
+        # q_eval_1_target = self.action_clock_wise_rotate(q_eval)
+        # q_eval_2_target = self.action_clock_wise_rotate(q_eval_1_target)
+        # q_eval_3_target = self.action_clock_wise_rotate(q_eval_2_target)
+        #
+        # obs_1 = self.obs_clock_wise_rotate(obs)
+        # obs_2 = self.obs_clock_wise_rotate(obs_1)
+        # obs_3 = self.obs_clock_wise_rotate(obs_2)
+        #
+        # q_eval_1 = self.model(obs_1)
+        # q_eval_2 = self.model(obs_2)
+        # q_eval_3 = self.model(obs_3)
+        #
+        # loss += (F.mse_loss(q_eval_1, q_eval_1_target)
+        #     + F.mse_loss(q_eval_2, q_eval_2_target)
+        #     + F.mse_loss(q_eval_3, q_eval_3_target)) * 0.05
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        # self.model.fit([obs], target_f, epochs=1, verbose=0)
-
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
     def load_model(self, dir="model/dqn", step=0):
-        name = "dqn_agent_{}.ckpt".format(step)
+        name = "qr_dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         print("load from " + model_name)
         self.model.load_state_dict(torch.load(model_name))
 
     def save_model(self, dir="model/dqn", step=0):
-        name = "dqn_agent_{}.ckpt".format(step)
+        name = "qr_dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         torch.save(self.model.state_dict(), model_name)
 

@@ -21,9 +21,9 @@ class Base_QR_DQN_Model(nn.Module):
         super(Base_QR_DQN_Model, self).__init__()
         self.n_quant = n_quant
         self.n_action = output_dim
-        self.linear1 = nn.Linear(input_dim, 20)
+        self.linear1 = nn.Linear(input_dim, 32)
         self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(20, output_dim * n_quant)
+        self.linear2 = nn.Linear(32, output_dim * n_quant)
 
     def forward(self, ob):
         x = self.relu(self.linear1(ob))
