@@ -414,7 +414,7 @@ def format_exception(grep_word):
     return exception_str
 
 
-Experience = namedtuple('Experience', ['state', 'action', 'reward', 'done'])
+Experience = namedtuple('Experience', ['state', 'action', 'reward', 'done', 'next_state'])
 
 def _group_list(items, lens):
     """
@@ -511,13 +511,13 @@ class ExperienceSourceFirstLast(ptan.experience.ExperienceSource):
 
                     if state is not None:
                         for agent_id in self.agent_id_list:
-                            history.append(Experience(state=state[agent_id]['lane_vehicle_num'], action=action_n[agent_id], reward=r[agent_id], done=is_done[agent_id]))
+                            history.append(Experience(state=state[agent_id]['lane_vehicle_num'], action=action_n[agent_id], reward=r[agent_id], done=is_done[agent_id], next_state=next_state[agent_id]['lane_vehicle_num']))
                             cur_rewards[idx] += r[agent_id]
                             cur_steps[idx] += 1
 
                         # if len(history) == self.steps_count and iter_idx % self.steps_delta == 0:
                         if True and iter_idx % self.steps_delta == 0:
-                            yield tuple(history)
+                            yield history
 
                     states[idx] = next_state
                     if all(is_done.values()):
@@ -580,10 +580,12 @@ def calc_loss(batch, batch_weights, net, tgt_net, gamma, device="cpu"):
     states, actions, rewards, dones, next_states = common.unpack_batch(batch)
     batch_size = len(batch)
 
-    states_v = torch.tensor(states).to(device)
-    actions_v = torch.tensor(actions).to(device)
-    next_states_v = torch.tensor(next_states).to(device)
-    batch_weights_v = torch.tensor(batch_weights).to(device)
+    print("actions:", actions)
+
+    states_v = torch.tensor(states, dtype=torch.float32).to(device)
+    actions_v = torch.tensor(actions, dtype=torch.long).to(device)
+    next_states_v = torch.tensor(next_states, dtype=torch.float32).to(device)
+    batch_weights_v = torch.tensor(batch_weights, dtype=torch.float32).to(device)
 
     # next state distribution
     # dueling arch -- actions from main net, distr from tgt_net
@@ -639,17 +641,15 @@ def train():
     dqn_agent = ptan.agent.DQNAgent(agent, ptan.actions.ArgmaxActionSelector(), device=device, preprocessor=None)
 
     exp_source = ExperienceSourceFirstLast(env, dqn_agent, agent.gamma, agents, agent_id_list, roads, steps_count=REWARD_STEPS)
-    buffer = ptan.experience.PrioritizedReplayBuffer(exp_source, 20, PRIO_REPLAY_ALPHA)
+    buffer = ptan.experience.PrioritizedReplayBuffer(exp_source, 200, PRIO_REPLAY_ALPHA)
 
     frame_idx = 0
     beta = BETA_START
 
     with common.RewardTracker(writer, -1) as reward_tracker:
         while True:
-
-            if frame_idx % 1 == 0:
-                print("Iteration:", frame_idx)
-                print("length of buffer:", len(buffer))
+            if frame_idx % 50 == 0:
+                print("Frameidx:", frame_idx)
 
             frame_idx += 1
             buffer.populate(1)
@@ -660,11 +660,12 @@ def train():
                 if reward_tracker.reward(new_rewards[0], frame_idx):
                     break
 
-            if len(buffer) < 20:
+            if len(buffer) < 200:
                 continue
 
             agent.optimizer.zero_grad()
             batch, batch_indices, batch_weights = buffer.sample(agent.batch_size, beta)
+
             loss_v, sample_prios_v = calc_loss(batch, batch_weights, agent.model, agent.target_model.target_model,
                                                agent.gamma ** REWARD_STEPS, device=device)
             loss_v.backward()
@@ -674,7 +675,7 @@ def train():
             if frame_idx % agent.update_target_model_freq == 0:
                 agent.target_model.sync()
 
-            if frame_idx % 50 == 0:
+            if frame_idx % 500 == 0:
                 if not os.path.exists(args.save_dir):
                     os.makedirs(args.save_dir)
                 agent.save_model(args.save_dir, e)

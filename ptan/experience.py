@@ -352,6 +352,7 @@ class ExperienceReplayBuffer:
     def _add(self, sample):
         if len(self.buffer) < self.capacity:
             self.buffer.append(sample)
+            # self.buffer.extend(sample)
         else:
             self.buffer[self.pos] = sample
             self.pos = (self.pos + 1) % self.capacity
@@ -363,7 +364,8 @@ class ExperienceReplayBuffer:
         """
         for _ in range(samples):
             entry = next(self.experience_source_iter)
-            self._add(entry)
+            for sample in entry:
+                self._add(sample)
 
 class PrioReplayBufferNaive:
     def __init__(self, exp_source, buf_size, prob_alpha=0.6):
