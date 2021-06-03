@@ -1,4 +1,6 @@
+import ptan
 import copy
+import torch.nn.functional as F
 import datetime
 
 import CBEngine
@@ -13,7 +15,12 @@ from pathlib import Path
 import re
 import gym
 import numpy as np
+import torch.cuda
+
 from agent.configs import *
+from collections import namedtuple, deque
+from tensorboardX import SummaryWriter
+from agent.lib import common
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__file__)
@@ -27,8 +34,6 @@ warnings.filterwarnings("ignore")
 def pretty_files(path):
     contents = os.listdir(path)
     return "[{}]".format(", ".join(contents))
-
-
 def resolve_dirs(root_path: str, input_dir: str = None, output_dir: str = None):
     root_path = Path(root_path)
 
@@ -56,8 +61,6 @@ def resolve_dirs(root_path: str, input_dir: str = None, output_dir: str = None):
         logger.warning(f"submission_dir={submission_dir} does not exist")
 
     return submission_dir, scores_dir
-
-
 def load_agent_submission(submission_dir: Path):
     logger.info(f"files under submission dir:{pretty_files(submission_dir)}")
 
@@ -82,14 +85,12 @@ def load_agent_submission(submission_dir: Path):
 
     # This will fail w/ an import error of the submissions directory does not exist
     import gym_cfg as gym_cfg_submission
-    import agent_QR_DQN as agent_submission
+    import agent_rainbow as agent_submission
     # import agent_DQN_pt as agent_submission
 
     gym_cfg_instance = gym_cfg_submission.gym_cfg()
 
     return agent_submission.agent_specs, gym_cfg_instance
-
-
 def read_config(cfg_file):
     configs = {}
     with open(cfg_file, 'r') as f:
@@ -99,8 +100,6 @@ def read_config(cfg_file):
             if (len(line) == 3 and line[0][0] != '#'):
                 configs[line[0]] = line[-1]
     return configs
-
-
 def process_roadnet(roadnet_file):
     # intersections[key_id] = {
     #     'have_signal': bool,
@@ -207,8 +206,6 @@ def process_roadnet(roadnet_file):
                     intersections[agent]['lanes'].append(lane)
 
     return intersections, roads, agents
-
-
 def process_delay_index(lines, roads, step):
     vehicles = {}
 
@@ -258,8 +255,6 @@ def process_delay_index(lines, roads, step):
     # 'vehicle_list' contains the vehicle_id at this snapshot.
     # 'vehicles' is a dict contains vehicle infomation at this snapshot
     return delay_index_list, vehicle_list, vehicles
-
-
 def process_score(log_path, roads, step, scores_dir):
     result_write = {
         "data": {
@@ -282,221 +277,6 @@ def process_score(log_path, roads, step, scores_dir):
             json.dump(result_write, f_out, indent=2)
 
     return result_write['data']['total_served_vehicles'], result_write['data']['delay_index']
-
-
-def train(agent_spec, simulator_cfg_file, gym_cfg, metric_period):
-    logger.info("\n")
-    logger.info("*" * 40)
-
-    gym_configs = gym_cfg.cfg
-    simulator_configs = read_config(simulator_cfg_file)
-    env = gym.make(
-        'CBEngine-v0',
-        simulator_cfg_file=simulator_cfg_file,
-        thread_num=1,
-        gym_dict=gym_configs,
-        metric_period=metric_period
-    )
-    scenario = [
-        'test'
-    ]
-
-    done = False
-
-    roadnet_path = Path(simulator_configs['road_file_addr'])
-
-    intersections, roads, agents = process_roadnet(roadnet_path)
-
-    observations, infos = env.reset()
-    agent_id_list = []
-    for k in observations:
-        agent_id_list.append(int(k.split('_')[0]))
-    agent_id_list = list(set(agent_id_list))
-    agent = agent_spec[scenario[0]]
-    agent.load_agent_list(agent_id_list)
-    agent.load_roadnet(intersections, roads, agents)
-    # Here begins the code for training
-
-    total_decision_num = 0
-    env.set_log(0)
-    env.set_warning(0)
-    env.set_ui(0)
-    env.set_info(0)
-    # agent.load_model(args.save_dir, 199)
-
-    # The main loop
-    for e in range(args.episodes):
-        print("----------------------------------------------------{}/{}".format(e, args.episodes))
-        last_obs = env.reset()
-        episodes_rewards = {}
-        for agent_id in agent_id_list:
-            episodes_rewards[agent_id] = 0
-        episodes_decision_num = 0
-
-        # Begins one simulation.
-        i = 0
-        while i < args.steps:
-            if i % 20 == 0:
-                print(f"Epoch [{e}], iter: [{i}]")
-                sys.stdout.flush()
-            if i % args.action_interval == 0:
-                if isinstance(last_obs, tuple):
-                    observations = last_obs[0]
-                else:
-                    observations = last_obs
-                actions = {}
-
-                # Get the state.
-
-                observations_for_agent = {}
-                for key, val in observations.items():
-                    observations_agent_id = int(key.split('_')[0])
-                    observations_feature = "_".join(key.split('_')[1:])
-                    if (observations_agent_id not in observations_for_agent.keys()):
-                        observations_for_agent[observations_agent_id] = {}
-                    val = val[1:]
-                    while len(val) < agent.ob_length:
-                        val.append(0)
-                    observations_for_agent[observations_agent_id][observations_feature] = val
-
-                # for FRAP observation
-                if MODEL_NAME == 'FRAP':
-                    observations_frap = {}
-                    for agent_id in agent_id_list:
-                        lane_vehicle_num = observations_for_agent[agent_id]['lane_vehicle_num']
-                        pressures = []
-                        for j in range(8):
-                            pressure_j = lane_vehicle_num[FRAP_intersections[j][1]] - lane_vehicle_num[
-                                FRAP_intersections[j][0]]
-                            pressures.append([pressure_j, Phase_to_FRAP_Phase[agent.last_change_step[agent_id]][j]])
-                        observations_frap[agent_id] = pressures
-
-                # Get the action, note that we use act_() for training.
-                if MODEL_NAME == 'MLP':
-                    actions = agent.act_(observations_for_agent)
-                else:
-                    actions = agent.act_(observations_frap)
-
-                rewards_list = {}
-
-                actions_ = {}
-                for key in actions.keys():
-                    actions_[key] = actions[key] + 1
-
-                # We keep the same action for a certain time
-                for _ in range(args.action_interval):
-                    # print(i)
-                    i += 1
-
-                    # Interacts with the environment and get the reward.
-                    # print("stepping")
-                    observations, rewards, dones, infos = env.step(actions_)
-                    # print("after step")
-                    for agent_id in agent_id_list:
-                        lane_vehicle_num = observations["{}_lane_vehicle_num".format(agent_id)]
-                        lane_num_divide_length = copy.deepcopy(lane_vehicle_num[1:])
-                        lane_num_divide_length = np.array(lane_num_divide_length, dtype=float)
-
-                        roads_id = agents[agent_id][:4]
-
-                        for idx, road_id in enumerate(roads_id):
-                            if road_id == -1: continue
-                            lane_num_divide_length[idx*3:(idx+1)*3] = lane_num_divide_length[idx*3:(idx+1)*3] / roads[road_id]['length'] * 100
-                            lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] \
-                                = lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] / roads[road_id]['length'] * 100
-                        # pressure = (np.sum(lane_vehicle_num[13: 25]) - np.sum(lane_vehicle_num[1: 13])) / args.action_interval
-
-                        pressure = (np.sum(lane_num_divide_length[12:]) - np.sum(lane_num_divide_length[:12])) * args.action_interval
-                        # if np.random.random() < 0.01:
-                        #     print("lane_vehicle_num:", lane_vehicle_num[1:])
-                        #     print("lane_num_divide_length:", lane_num_divide_length)
-                        #
-                        #     print("out sum:", np.sum(lane_num_divide_length[12:]))
-                        #     print("in sum:", np.sum(lane_num_divide_length[:12]))
-                        #     print("pressure:", pressure)
-
-                        lane_vehicle_speed = observations["{}_lane_speed".format(agent_id)]
-
-                        if agent_id in rewards_list:
-                            rewards_list[agent_id] += pressure
-                        else:
-                            rewards_list[agent_id] = pressure
-
-                rewards = rewards_list
-                new_observations_for_agent = {}
-
-                # Get next state.
-
-                for key, val in observations.items():
-                    observations_agent_id = int(key.split('_')[0])
-                    observations_feature = "_".join(key.split('_')[1:])
-                    if (observations_agent_id not in new_observations_for_agent.keys()):
-                        new_observations_for_agent[observations_agent_id] = {}
-                    val = val[1:]
-                    while len(val) < agent.ob_length:
-                        val.append(0)
-                    new_observations_for_agent[observations_agent_id][observations_feature] = val
-
-                if MODEL_NAME == 'FRAP':
-                    new_observations_frap = {}
-                    for agent_id in agent_id_list:
-                        pressures = []
-                        lane_vehicle_num = new_observations_for_agent[agent_id]['lane_vehicle_num']
-                        for j in range(8):
-                            pressure_j = lane_vehicle_num[FRAP_intersections[j][1]] - lane_vehicle_num[
-                                FRAP_intersections[j][0]]
-                            pressures.append([pressure_j, Phase_to_FRAP_Phase[agent.last_change_step[agent_id]][j]])
-                        new_observations_frap[agent_id] = pressures
-
-                # Remember (state, action, reward, next_state) into memory buffer.
-                for agent_id in agent_id_list:
-                    if MODEL_NAME == 'MLP':
-                        if with_Speed:
-                            agent.remember(np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
-                                                           observations_for_agent[agent_id]['lane_speed']]),
-                                           actions[agent_id],
-                                           rewards[agent_id],
-                                           np.concatenate([new_observations_for_agent[agent_id]['lane_vehicle_num'],
-                                                           new_observations_for_agent[agent_id]['lane_speed']]), agent_id)
-                        else:
-                            agent.remember(observations_for_agent[agent_id]['lane_vehicle_num'], actions[agent_id],
-                                           rewards[agent_id],
-                                           new_observations_for_agent[agent_id]['lane_vehicle_num'], agent_id)
-                    else:
-                        agent.remember(observations_frap[agent_id], actions[agent_id],
-                                       rewards[agent_id],
-                                       new_observations_frap[agent_id])
-
-
-                    episodes_rewards[agent_id] += rewards[agent_id]
-                episodes_decision_num += 1
-                total_decision_num += 1
-
-                last_obs = observations
-
-            # Update the network
-            if total_decision_num > agent.learning_start and total_decision_num % agent.update_model_freq == agent.update_model_freq - 1:
-                agent.replay()
-            if total_decision_num > agent.learning_start and total_decision_num % agent.update_target_model_freq == agent.update_target_model_freq - 1:
-                agent.update_target_network()
-            if all(dones.values()):
-                break
-        if e % args.save_rate == args.save_rate - 1:
-            if not os.path.exists(args.save_dir):
-                os.makedirs(args.save_dir)
-            agent.save_model(args.save_dir, e)
-        logger.info(
-            "episode:{}/{}, average travel time:{}".format(e, args.episodes, env.eng.get_average_travel_time()))
-
-        rewards = 0
-        for agent_id in agent_id_list:
-            rewards += episodes_rewards[agent_id] / episodes_decision_num
-        logger.info("episode:{}/{}, Total Rewards:{}".format(e, args.episodes, rewards))
-
-        # logger.info(
-        #     "agent:{}, mean_episode_reward:{}".format(agent_id, episodes_rewards[agent_id] / episodes_decision_num))
-
-
 def run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, scores_dir, threshold):
     logger.info("\n")
     logger.info("*" * 40)
@@ -615,8 +395,6 @@ def run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, score
     # eval_end = time.time()
     # logger.info("scoring cost {}s".format(eval_end-eval_start))
     return tot_v, d_i
-
-
 def format_exception(grep_word):
     exception_list = traceback.format_stack()
     exception_list = exception_list[:-2]
@@ -635,6 +413,273 @@ def format_exception(grep_word):
 
     return exception_str
 
+
+Experience = namedtuple('Experience', ['state', 'action', 'reward', 'done'])
+
+def _group_list(items, lens):
+    """
+    Unflat the list of items by lens
+    :param items: list of items
+    :param lens: list of integers
+    :return: list of list of items grouped by lengths
+    """
+    res = []
+    cur_ofs = 0
+    for g_len in lens:
+        res.append(items[cur_ofs:cur_ofs+g_len])
+        cur_ofs += g_len
+    return res
+
+
+class ExperienceSourceFirstLast(ptan.experience.ExperienceSource):
+    def __init__(self, env, agent, gamma, agents, agent_id_list, roads, steps_count=1, steps_delta=1, vectorized=False):
+        super(ExperienceSourceFirstLast, self).__init__(env, agent, steps_count+1, steps_delta, vectorized=vectorized)
+        self.gamma = gamma
+        self.steps = steps_count
+        self.agents = agents
+        self.roads = roads
+        self.agent_id_list = agent_id_list
+
+    def __iter__(self):
+        states, agent_states, histories, cur_rewards, cur_steps = [], [], [], [], []
+        env_lens = []
+        for env in self.pool:
+            obs, infos = env.reset()
+
+            env.set_log(0)
+            env.set_warning(0)
+            env.set_ui(0)
+            env.set_info(0)
+
+            # if the environment is vectorized, all it's output is lists of results.
+            # Details are here: https://github.com/openai/universe/blob/master/doc/env_semantics.rst
+
+            obs = self.extract_state(obs)
+
+            if self.vectorized:
+                obs_len = len(obs)
+                states.extend(obs)
+            else:
+                obs_len = 1
+                states.append(obs)
+            env_lens.append(obs_len)
+
+            for _ in range(obs_len):
+                histories.append(deque(maxlen=self.steps_count))
+                cur_rewards.append(0.0)
+                cur_steps.append(0)
+                agent_states.append(None)
+
+        iter_idx = 0
+        while True:
+            actions = [None] * len(states)
+            states_input = []
+            states_indices = []
+            for idx, state in enumerate(states):
+                if state is None:
+                    actions[idx] = self.pool[0].action_space.sample()  # assume that all envs are from the same family
+                else:
+                    states_input.append(state)
+                    states_indices.append(idx)
+            # if states_input:
+            assert not isinstance(states_input[0], tuple)
+            states_actions, _ = self.agent(states_input[0])
+                # for idx, action in enumerate(states_actions):
+                #     g_idx = states_indices[idx]
+                #     actions[g_idx] = action
+                    # agent_states[g_idx] = new_agent_states[idx]
+            # grouped_actions = _group_list(actions, env_lens)
+            grouped_actions = [states_actions]
+
+            global_ofs = 0
+            for env_idx, (env, action_n) in enumerate(zip(self.pool, grouped_actions)):
+                if self.vectorized:
+                    next_state_n, r_n, is_done_n, _ = env.step(action_n)
+                else:
+                    # next_state, r, is_done, _ = env.step(action_n[0])
+                    next_state, r, is_done, _ = env.step(action_n)
+
+                    rewards = self.extract_rewards(next_state)
+                    next_state = self.extract_state(next_state)
+
+                    next_state_n, r_n, is_done_n = [next_state], [rewards], [is_done]
+
+                for ofs, (action, next_state, r, is_done) in enumerate(zip(action_n, next_state_n, r_n, is_done_n)):
+                    idx = global_ofs + ofs
+                    state = states[idx]
+                    history = histories[idx]
+
+                    if state is not None:
+                        for agent_id in self.agent_id_list:
+                            history.append(Experience(state=state[agent_id]['lane_vehicle_num'], action=action_n[agent_id], reward=r[agent_id], done=is_done[agent_id]))
+                            cur_rewards[idx] += r[agent_id]
+                            cur_steps[idx] += 1
+
+                        # if len(history) == self.steps_count and iter_idx % self.steps_delta == 0:
+                        if True and iter_idx % self.steps_delta == 0:
+                            yield tuple(history)
+
+                    states[idx] = next_state
+                    if all(is_done.values()):
+                        # generate tail of history
+                        while len(history) >= 1:
+                            yield tuple(history)
+                            history.popleft()
+                        self.total_rewards.append(cur_rewards[idx])
+                        self.total_steps.append(cur_steps[idx])
+                        cur_rewards[idx] = 0.0
+                        cur_steps[idx] = 0
+                        # vectorized envs are reset automatically
+                        states[idx] = self.extract_state(env.reset()[0])
+                        env.set_log(0)
+                        env.set_warning(0)
+                        env.set_ui(0)
+                        env.set_info(0)
+                        sys.stdout.flush()
+                        # states[idx] = env.reset() if not self.vectorized else None
+                        # agent_states[idx] = self.agent.initial_state()
+                        history.clear()
+                global_ofs += len(action_n)
+            iter_idx += 1
+
+    def extract_rewards(self, next_state):
+        rewards = {}
+        for agent_id in self.agent_id_list:
+            lane_vehicle_num = next_state["{}_lane_vehicle_num".format(agent_id)]
+            lane_num_divide_length = copy.deepcopy(lane_vehicle_num[1:])
+            lane_num_divide_length = np.array(lane_num_divide_length, dtype=float)
+
+            roads_id = agents[agent_id][:4]
+
+            for idx, road_id in enumerate(roads_id):
+                if road_id == -1: continue
+                lane_num_divide_length[idx * 3:(idx + 1) * 3] = lane_num_divide_length[idx * 3:(idx + 1) * 3] / \
+                                                                roads[road_id]['length'] * 100
+                lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] \
+                    = lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] / roads[road_id]['length'] * 100
+            # pressure = (np.sum(lane_vehicle_num[13: 25]) - np.sum(lane_vehicle_num[1: 13])) / args.action_interval
+
+            pressure = (np.sum(lane_num_divide_length[12:]) - np.sum(
+                lane_num_divide_length[:12])) * args.action_interval
+            rewards[agent_id] = pressure
+        return rewards
+    def extract_state(self, obs):
+        observations_for_agent = {}
+        for key, val in obs.items():
+            observations_agent_id = int(key.split('_')[0])
+            observations_feature = "_".join(key.split('_')[1:])
+            if (observations_agent_id not in observations_for_agent.keys()):
+                observations_for_agent[observations_agent_id] = {}
+            val = val[1:]
+            while len(val) < 24:
+                val.append(0)
+            observations_for_agent[observations_agent_id][observations_feature] = val
+        return observations_for_agent
+
+def calc_loss(batch, batch_weights, net, tgt_net, gamma, device="cpu"):
+    states, actions, rewards, dones, next_states = common.unpack_batch(batch)
+    batch_size = len(batch)
+
+    states_v = torch.tensor(states).to(device)
+    actions_v = torch.tensor(actions).to(device)
+    next_states_v = torch.tensor(next_states).to(device)
+    batch_weights_v = torch.tensor(batch_weights).to(device)
+
+    # next state distribution
+    # dueling arch -- actions from main net, distr from tgt_net
+
+    # calc at once both next and cur states
+    distr_v, qvals_v = net.both(torch.cat((states_v, next_states_v)))
+    next_qvals_v = qvals_v[batch_size:]
+    distr_v = distr_v[:batch_size]
+
+    next_actions_v = next_qvals_v.max(1)[1]
+    next_distr_v = tgt_net(next_states_v)
+    next_best_distr_v = next_distr_v[range(batch_size), next_actions_v.data]
+    next_best_distr_v = tgt_net.apply_softmax(next_best_distr_v)
+    next_best_distr = next_best_distr_v.data.cpu().numpy()
+
+    dones = dones.astype(np.bool)
+
+    # project our distribution using Bellman update
+    proj_distr = common.distr_projection(next_best_distr, rewards, dones, Vmin, Vmax, N_ATOMS, gamma)
+
+    # calculate net output
+    state_action_values = distr_v[range(batch_size), actions_v.data]
+    state_log_sm_v = F.log_softmax(state_action_values, dim=1)
+    proj_distr_v = torch.tensor(proj_distr).to(device)
+
+    loss_v = -state_log_sm_v * proj_distr_v
+    loss_v = batch_weights_v * loss_v.sum(dim=1)
+    return loss_v.mean(), loss_v + 1e-5
+
+
+def train():
+    observations, infos = env.reset()
+    agent_id_list = []
+    for k in observations:
+        agent_id_list.append(int(k.split('_')[0]))
+    agent_id_list = list(set(agent_id_list))
+    agent = agent_spec[scenario[0]]
+    agent.load_agent_list(agent_id_list)
+    agent.load_roadnet(intersections, roads, agents)
+
+    total_decision_num = 0
+    env.set_log(0)
+    env.set_warning(0)
+    env.set_ui(0)
+    env.set_info(0)
+
+    agent = agent_spec[scenario[0]]
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    writer = SummaryWriter(comment="-rainbow")
+
+    dqn_agent = ptan.agent.DQNAgent(agent, ptan.actions.ArgmaxActionSelector(), device=device, preprocessor=None)
+
+    exp_source = ExperienceSourceFirstLast(env, dqn_agent, agent.gamma, agents, agent_id_list, roads, steps_count=REWARD_STEPS)
+    buffer = ptan.experience.PrioritizedReplayBuffer(exp_source, 20, PRIO_REPLAY_ALPHA)
+
+    frame_idx = 0
+    beta = BETA_START
+
+    with common.RewardTracker(writer, -1) as reward_tracker:
+        while True:
+
+            if frame_idx % 1 == 0:
+                print("Iteration:", frame_idx)
+                print("length of buffer:", len(buffer))
+
+            frame_idx += 1
+            buffer.populate(1)
+            beta = min(1.0, BETA_START + frame_idx * (1.0 - BETA_START) / BETA_FRAMES)
+
+            new_rewards = exp_source.pop_total_rewards()
+            if new_rewards:
+                if reward_tracker.reward(new_rewards[0], frame_idx):
+                    break
+
+            if len(buffer) < 20:
+                continue
+
+            agent.optimizer.zero_grad()
+            batch, batch_indices, batch_weights = buffer.sample(agent.batch_size, beta)
+            loss_v, sample_prios_v = calc_loss(batch, batch_weights, agent.model, agent.target_model.target_model,
+                                               agent.gamma ** REWARD_STEPS, device=device)
+            loss_v.backward()
+            agent.optimizer.step()
+            buffer.update_priorities(batch_indices, sample_prios_v.data.cpu().numpy())
+
+            if frame_idx % agent.update_target_model_freq == 0:
+                agent.target_model.sync()
+
+            if frame_idx % 50 == 0:
+                if not os.path.exists(args.save_dir):
+                    os.makedirs(args.save_dir)
+                agent.save_model(args.save_dir, e)
+
+    agent.save_model()
 
 if __name__ == "__main__":
     # arg parse
@@ -730,10 +775,32 @@ if __name__ == "__main__":
 
     logger.info(f"Loaded user agent instance={agent_spec}")
 
+    logger.info("\n")
+    logger.info("*" * 40)
+
+    gym_configs = gym_cfg.cfg
+    simulator_configs = read_config(simulator_cfg_file)
+    env = gym.make(
+        'CBEngine-v0',
+        simulator_cfg_file=simulator_cfg_file,
+        thread_num=1,
+        gym_dict=gym_configs,
+        metric_period=metric_period
+    )
+    scenario = [
+        'test'
+    ]
+
+    done = False
+
+    roadnet_path = Path(simulator_configs['road_file_addr'])
+
+    intersections, roads, agents = process_roadnet(roadnet_path)
+
     # simulation
     start_time = time.time()
     try:
-        train(agent_spec, simulator_cfg_file, gym_cfg, metric_period)
+        train()
         scores = run_simulation(agent_spec, simulator_cfg_file, gym_cfg, metric_period, scores_dir, threshold)
     except Exception as e:
         msg = format_exception(e)
@@ -759,3 +826,4 @@ if __name__ == "__main__":
     json.dump(result, open(scores_dir / "scores.json", 'w'), indent=2)
 
     logger.info("Evaluation complete")
+

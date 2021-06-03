@@ -21,9 +21,11 @@ logger.setLevel(logging.INFO)
 gym.logger.setLevel(gym.logger.ERROR)
 
 import warnings
+
 warnings.filterwarnings("ignore")
 
 With_Speed = False
+
 
 def pretty_files(path):
     contents = os.listdir(path)
@@ -303,6 +305,7 @@ def format_exception(grep_word):
 
     return exception_str
 
+
 if __name__ == "__main__":
     # arg parse
     parser = argparse.ArgumentParser(
@@ -421,13 +424,20 @@ if __name__ == "__main__":
 
     for agent_id in agents.keys():
         if -1 in agents[agent_id]:
-            print(f"agent id {agent_id}, roads: {agents[agent_id]}")
+            # print(f"agent id {agent_id}, roads: {agents[agent_id]}")
+            continue
 
-    # print("agents id [22265622307]:", agents[22265622307])
-    # print("agents id [22265622307]:", agents[22265622307])
-
-
-
-
+        if np.random.random() < 0.05:
+            # check if the in_road and out_road are consistent in lengths
+            in_road_ids = agents[agent_id][:4]
+            out_road_ids = agents[agent_id][4:]
+            print("lengths of in roads:", end=': ')
+            for id in in_road_ids:
+                print(roads[id]['length'], end='; ')
+            print()
+            print("lengths of out roads:", end=': ')
+            for id in in_road_ids:
+                print(roads[id]['length'], end='; ')
+            print()
 
     observations, infos = env.reset()

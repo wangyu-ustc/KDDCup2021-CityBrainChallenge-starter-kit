@@ -1,3 +1,4 @@
+import copy
 import os
 
 import torch
@@ -7,7 +8,7 @@ path = os.path.split(os.path.realpath(__file__))[0]
 import sys
 sys.path.append(path)
 import random
-from model import BaseModel, Base_QR_DQN_Model
+from model import *
 
 import os
 from collections import deque
@@ -52,7 +53,11 @@ class TestAgent():
         self.phase_passablelane = {}
 
         self.memory = deque(maxlen=2000)
-        self.learning_start = 200
+
+        self.three_inter_memory = deque(maxlen=2000)
+        self.four_inter_memory = deque(maxlen=2000)
+
+        self.learning_start = 2000
         self.update_model_freq = 1
         self.update_target_model_freq = 20
 
@@ -61,12 +66,22 @@ class TestAgent():
         self.epsilon_min = 0.01
         self.epsilon_decay = 0.995
         self.learning_rate = 0.005
-        self.batch_size = 32
+        self.batch_size = 128
         self.ob_length = 24
 
         self.action_space = 8
 
         self.rotate_matrix = torch.zeros([8, 8])
+
+        self.three_to_four_mapping = {
+            # action [1,2,3] should be [2,5,6]
+            1: 2, 2: 5, 3: 6
+        }
+        self.four_to_three_mapping = {
+            y: x for x,y in self.three_to_four_mapping.items()
+        }
+
+
         self.inverse_clockwise_mapping = {
             1: 3,
             2: 4,
@@ -86,11 +101,14 @@ class TestAgent():
             self.rotate_matrix[i][self.inverse_clockwise_mapping[i+1]-1] = 1
 
         self.model = self._build_model()
+        self.model3inter = self._build_model(Three_inter=True)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
+        self.optimizer3inter = torch.optim.Adam(self.model3inter.parameters(), lr=0.001)
         # Remember to uncomment the following lines when submitting, and submit your model file as well.
         # path = os.path.split(os.path.realpath(__file__))[0]
         # self.load_model(path, 99)
         self.target_model = self._build_model()
+        self.target_model3inter = self._build_model(Three_inter=True)
         self.update_target_network()
 
 
@@ -132,13 +150,42 @@ class TestAgent():
         if MODEL_NAME == 'MLP':
             actions = {}
             for agent_id in self.agent_list:
+                if not with_Speed:
+                    if -1 in self.agents[agent_id]:
+                        idx = self.agents[agent_id][:4].index(-1)
+                        while idx < 3:
+                            observations_for_agent[agent_id]['lane_vehicle_num'] \
+                                = self.obs_clock_wise_rotate( observations_for_agent[agent_id]['lane_vehicle_num'])
+                            idx += 1
+                        action = self.get_action_3inter(observations_for_agent[agent_id]['lane_vehicle_num'])
+                        action = self.three_to_four_mapping[action + 1] - 1
+                        idx = self.agents[agent_id][:4].index(-1)
+                        while idx < 3:
+                            action = self.inverse_clockwise_mapping[action + 1] - 1
+                            idx += 1
+                    else:
+                        action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
 
-                if -1 in self.agents[agent_id]:
-                    while -1 in self.agents[agent_id][:4]:
-                        pass
-
-
-                action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
+                else:
+                    if -1 in self.agents[agent_id]:
+                        idx = self.agents[agent_id][:4].index(-1)
+                        while idx < 3:
+                            observations_for_agent[agent_id]['lane_vehicle_num'] \
+                                = self.obs_clock_wise_rotate(observations_for_agent[agent_id]['lane_vehicle_num'])
+                            observations_for_agent[agent_id]['lane_speed'] \
+                                = self.obs_clock_wise_rotate(observations_for_agent[agent_id]['lane_speed'])
+                            idx += 1
+                        action = self.get_action_3inter(
+                            np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
+                                           observations_for_agent[agent_id]['lane_speed']]))
+                        action = self.three_to_four_mapping[action + 1] - 1
+                        idx = self.agents[agent_id][:4].index(-1)
+                        while idx < 3:
+                            action = self.inverse_clockwise_mapping[action + 1] - 1
+                            idx += 1
+                    else:
+                        action = self.get_action(np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
+                                                                observations_for_agent[agent_id]['lane_speed']]))
                 actions[agent_id] = action
             return actions
         else:
@@ -171,14 +218,49 @@ class TestAgent():
             observations_for_agent[observations_agent_id][observations_feature] = val[1:]
 
         # Get actions
-        for agent in self.agent_list:
+        for agent_id in self.agent_list:
             self.epsilon = 0
-            if with_Speed:
-                action = self.get_action(np.concatenate(observations_for_agent[agent]['lane_vehicle_num'],
-                                                        observations_for_agent[agent]['lane_speed']))
+            
+            
+            if not with_Speed:
+                if -1 in self.agents[agent_id]:
+                    idx = self.agents[agent_id][:4].index(-1)
+                    while idx < 3:
+                        observations_for_agent[agent_id]['lane_vehicle_num'] \
+                            = self.obs_clock_wise_rotate(observations_for_agent[agent_id]['lane_vehicle_num'])
+                        idx += 1
+                    action = self.get_action_3inter(observations_for_agent[agent_id]['lane_vehicle_num'])
+                    # action [1,2,3] should be [2,5,6]
+                    action = self.three_to_four_mapping[action + 1] - 1
+                    idx = self.agents[agent_id][:4].index(-1)
+                    while idx < 3:
+                        action = self.inverse_clockwise_mapping[action + 1] - 1
+                        idx += 1
+    
+                else:
+                    action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
+            
             else:
-                action = self.get_action(observations_for_agent[agent]['lane_vehicle_num'])
-            actions[agent] = action + 1
+                if -1 in self.agents[agent_id]:
+                    idx = self.agents[agent_id][:4].index(-1)
+                    while idx < 3:
+                        observations_for_agent[agent_id]['lane_vehicle_num'] \
+                            = self.obs_clock_wise_rotate(observations_for_agent[agent_id]['lane_vehicle_num'])
+                        observations_for_agent[agent_id]['lane_speed'] \
+                            = self.obs_clock_wise_rotate(observations_for_agent[agent_id]['lane_speed'])
+                        idx += 1
+                    action = self.get_action_3inter(np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
+                                                        observations_for_agent[agent_id]['lane_speed']]))
+                    action = self.three_to_four_mapping[action + 1] - 1
+                    idx = self.agents[agent_id][:4].index(-1)
+                    while idx < 3:
+                        action = self.inverse_clockwise_mapping[action + 1] - 1
+                        idx += 1
+                else:
+                    action = self.get_action(np.concatenate([observations_for_agent[agent_id]['lane_vehicle_num'],
+                                                        observations_for_agent[agent_id]['lane_speed']]))
+
+            actions[agent_id] = action + 1
         return actions
 
     def get_action(self, ob):
@@ -196,28 +278,67 @@ class TestAgent():
         # act_values = self.model.predict([ob])
         return torch.argmax(act_values[0]).item()
 
+    def get_action_3inter(self, ob):
+        if np.random.rand() <= self.epsilon:
+            return np.random.randint(0, 3)
+        ob = torch.tensor(ob, dtype=torch.float32)
+
+        if MODEL_NAME == 'MLP':
+            act_values =  self.model3inter(ob.reshape(1, -1).cuda()).mean(dim=2)
+        else:
+            act_values = self.model3inter(ob.cuda())
+        # ob = self._reshape_ob(ob)
+        # act_values = self.model.predict([ob])
+        return torch.argmax(act_values[0]).item()
+
+
     def sample(self):
         # Random samples
         return np.random.randint(0, self.action_space)
 
-    def _build_model(self):
+    def _build_model(self, Three_inter=False):
 
         # Neural Net for Deep-Q learning Model
         # return BaseModel(input_dim=self.ob_length, output_dim=self.action_space)
-        if with_Speed:
-            return Base_QR_DQN_Model(input_dim=self.ob_length * 2, output_dim=self.action_space, n_quant=N_QUANT).cuda()
+        
+        if not Three_inter:
+            if with_Speed:
+                return Noisy_QR_DQN_Model(input_dim=self.ob_length * 2, output_dim=self.action_space, n_quant=N_QUANT).cuda()
+            else:
+                return Noisy_QR_DQN_Model(input_dim=self.ob_length, output_dim=self.action_space, n_quant=N_QUANT).cuda()
         else:
-            return Base_QR_DQN_Model(input_dim=self.ob_length, output_dim=self.action_space, n_quant=N_QUANT).cuda()
+            if with_Speed:
+                return Noisy_QR_DQN_Model(input_dim=self.ob_length * 2, output_dim=3, n_quant=N_QUANT).cuda()
+            else:
+                return Noisy_QR_DQN_Model(input_dim=self.ob_length, output_dim=3, n_quant=N_QUANT).cuda()
 
 
     def update_target_network(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
-    def remember(self, ob, action, reward, next_ob):
-        self.memory.append((ob, action, reward, next_ob))
+    def remember(self, ob, action, reward, next_ob, agent_id=None):
+        if agent_id is None:
+            self.memory.append((ob, action, reward, next_ob))
+        else:
+            if -1 in self.agents[agent_id]:
+                idx = self.agents[agent_id][:4].index(-1)
+                while idx < 3:
+                    action = self.clockwise_mapping[action + 1] - 1
+                    ob[:24] = self.obs_clock_wise_rotate(ob[:24])
+                    next_ob[:24] = self.obs_clock_wise_rotate(next_ob[:24])
+                    if with_Speed:
+                        ob[24:] = self.obs_clock_wise_rotate(ob[24:])
+                        next_ob[24:] = self.obs_clock_wise_rotate(next_ob[24:])
+                    idx += 1
+                action = self.four_to_three_mapping[action + 1] - 1
+                assert action < 3
+                self.three_inter_memory.append((ob, action, reward, next_ob))
+            else:
+                self.four_inter_memory.append((ob, action, reward, next_ob))
+
 
     def obs_clock_wise_rotate(self, obs):
-        new_obs = obs.clone()
+        new_obs = copy.deepcopy(obs)
         new_obs[3: 12] = obs[0: 9]
         new_obs[0: 3] = obs[9: 12]
         new_obs[15: 24] = obs[12: 21]
@@ -228,8 +349,8 @@ class TestAgent():
         # action.shape: [bsz, n_actions, k] k = N_QUANT for QR-DQN, and k = 1 for DQN
         return torch.einsum('ij,bjn->bin', (self.rotate_matrix, action.cpu())).cuda()
 
-    def QR_DQN_loss(self, obs, actions, rewards, next_obs, b_w, b_idxes):
-        q_eval = self.model(obs)  # (m, N_ACTIONS, N_QUANT)
+    def QR_DQN_loss(self, obs, actions, rewards, next_obs, b_w, b_idxes, model, target_model):
+        q_eval = model(obs)  # (m, N_ACTIONS, N_QUANT)
         bsz = q_eval.shape[0]
         q_eval = torch.stack([q_eval[i].index_select(0, actions[i]) for i in range(bsz)]).squeeze(1)
         # (m, N_QUANT)
@@ -237,7 +358,7 @@ class TestAgent():
         # note that dim 1 is for present quantile, dim 2 is for next quantile
 
         # get next state value
-        q_next = self.target_model(next_obs).detach()  # (m, N_ACTIONS, N_QUANT)
+        q_next = target_model(next_obs).detach()  # (m, N_ACTIONS, N_QUANT)
         best_actions = q_next.mean(dim=2).argmax(dim=1)  # (m)
         q_next = torch.stack([q_next[i].index_select(0, best_actions[i]) for i in range(bsz)]).squeeze(1)
         # (m, N_QUANT)
@@ -260,58 +381,52 @@ class TestAgent():
         return loss
 
     def replay(self):
-        # Update the Q network from the memory buffer.
-
-        if self.batch_size > len(self.memory):
-            minibatch = self.memory
+        # Update the Q network from the four memory buffer.
+        if self.batch_size > len(self.four_inter_memory):
+            minibatch = self.four_inter_memory
         else:
-            minibatch = random.sample(self.memory, self.batch_size)
+            minibatch = random.sample(self.four_inter_memory, self.batch_size)
         obs, actions, rewards, next_obs, = [np.stack(x) for x in np.array(minibatch).T]
         b_w, b_idxes = np.ones_like(rewards), None
         obs, actions, rewards, next_obs = torch.FloatTensor(obs).cuda(), torch.LongTensor(actions).cuda(), \
                                           torch.FloatTensor(rewards).cuda(), torch.FloatTensor(next_obs).cuda()
-        loss = self.QR_DQN_loss(obs, actions, rewards, next_obs, b_w, b_idxes)
-        actions_1 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions.flatten()]).reshape(actions.shape).cuda()
-        actions_2 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions_1.flatten()]).reshape(actions.shape).cuda()
-        actions_3 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions_2.flatten()]).reshape(actions.shape).cuda()
 
-        obs_1 = self.obs_clock_wise_rotate(obs).detach()
-        obs_2 = self.obs_clock_wise_rotate(obs_1).detach()
-        obs_3 = self.obs_clock_wise_rotate(obs_2).detach()
-
-        next_obs_1 = self.obs_clock_wise_rotate(next_obs).detach()
-        next_obs_2 = self.obs_clock_wise_rotate(next_obs_1).detach()
-        next_obs_3 = self.obs_clock_wise_rotate(next_obs_2).detach()
-
-        loss += self.QR_DQN_loss(obs_1, actions_1, rewards, next_obs_1, b_w, b_idxes)
-        loss += self.QR_DQN_loss(obs_2, actions_2, rewards, next_obs_2, b_w, b_idxes)
-        loss += self.QR_DQN_loss(obs_3, actions_3, rewards, next_obs_3, b_w, b_idxes)
-
-        # self.optimizer.zero_grad()
-        # loss.backward()
-        # self.optimizer.step()
-        # self.model.fit([obs], target_f, epochs=1, verbose=0)
-        # unsupervised learning
-        # q_eval = self.model(obs).detach()
-        # q_eval_1_target = self.action_clock_wise_rotate(q_eval)
-        # q_eval_2_target = self.action_clock_wise_rotate(q_eval_1_target)
-        # q_eval_3_target = self.action_clock_wise_rotate(q_eval_2_target)
-        #
-        # obs_1 = self.obs_clock_wise_rotate(obs)
-        # obs_2 = self.obs_clock_wise_rotate(obs_1)
-        # obs_3 = self.obs_clock_wise_rotate(obs_2)
-        #
-        # q_eval_1 = self.model(obs_1)
-        # q_eval_2 = self.model(obs_2)
-        # q_eval_3 = self.model(obs_3)
-        #
-        # loss += (F.mse_loss(q_eval_1, q_eval_1_target)
-        #     + F.mse_loss(q_eval_2, q_eval_2_target)
-        #     + F.mse_loss(q_eval_3, q_eval_3_target)) * 0.05
-
+        loss = self.QR_DQN_loss(obs, actions, rewards, next_obs, b_w, b_idxes, self.model, self.target_model)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # actions_1 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions.flatten()]).reshape(actions.shape).cuda()
+        # actions_2 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions_1.flatten()]).reshape(actions.shape).cuda()
+        # actions_3 = torch.LongTensor([self.clockwise_mapping[x.item() + 1] - 1 for x in actions_2.flatten()]).reshape(actions.shape).cuda()
+        #
+        # obs_1 = self.obs_clock_wise_rotate(obs).detach()
+        # obs_2 = self.obs_clock_wise_rotate(obs_1).detach()
+        # obs_3 = self.obs_clock_wise_rotate(obs_2).detach()
+        #
+        # next_obs_1 = self.obs_clock_wise_rotate(next_obs).detach()
+        # next_obs_2 = self.obs_clock_wise_rotate(next_obs_1).detach()
+        # next_obs_3 = self.obs_clock_wise_rotate(next_obs_2).detach()
+        #
+        # loss = 0
+        # loss += 1/3*self.QR_DQN_loss(obs_1, actions_1, rewards, next_obs_1, b_w, b_idxes, self.model, self.target_model)
+        # loss += 1/3*self.QR_DQN_loss(obs_2, actions_2, rewards, next_obs_2, b_w, b_idxes, self.model, self.target_model)
+        # loss += 1/3*self.QR_DQN_loss(obs_3, actions_3, rewards, next_obs_3, b_w, b_idxes, self.model, self.target_model)
+
+        # Update the Q network from the three inter memory buffer.
+        if self.batch_size > len(self.three_inter_memory):
+            minibatch = self.three_inter_memory
+        else:
+            minibatch = random.sample(self.three_inter_memory, self.batch_size)
+        obs, actions, rewards, next_obs, = [np.stack(x) for x in np.array(minibatch).T]
+        b_w, b_idxes = np.ones_like(rewards), None
+        obs, actions, rewards, next_obs = torch.FloatTensor(obs).cuda(), torch.LongTensor(actions).cuda(), \
+                                          torch.FloatTensor(rewards).cuda(), torch.FloatTensor(next_obs).cuda()
+
+        loss = self.QR_DQN_loss(obs, actions, rewards, next_obs, b_w, b_idxes, self.model3inter, self.target_model3inter)
+        self.optimizer3inter.zero_grad()
+        loss.backward()
+        self.optimizer3inter.step()
 
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
@@ -319,13 +434,20 @@ class TestAgent():
     def load_model(self, dir="model/dqn", step=0):
         name = "qr_dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
-        print("load from " + model_name)
         self.model.load_state_dict(torch.load(model_name))
+
+        name = "qr_dqn_agent_{}_3inter.ckpt".format(step)
+        model_name = os.path.join(dir, name)
+        self.model3inter.load_state_dict(torch.load(model_name))
 
     def save_model(self, dir="model/dqn", step=0):
         name = "qr_dqn_agent_{}.ckpt".format(step)
         model_name = os.path.join(dir, name)
         torch.save(self.model.state_dict(), model_name)
+
+        name = "qr_dqn_agent_{}_3inter.ckpt".format(step)
+        model_name = os.path.join(dir, name)
+        torch.save(self.model3inter.state_dict(), model_name)
 
 scenario_dirs = [
     "test"

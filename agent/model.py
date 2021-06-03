@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from configs import *
+from lib import dqn_model, common
 
 
 class BaseModel(nn.Module):
@@ -21,13 +22,68 @@ class Base_QR_DQN_Model(nn.Module):
         super(Base_QR_DQN_Model, self).__init__()
         self.n_quant = n_quant
         self.n_action = output_dim
-        self.linear1 = nn.Linear(input_dim, 32)
+        self.linear1 = nn.Linear(input_dim, 64)
+        self.linear2 = nn.Linear(64, 32)
         self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(32, output_dim * n_quant)
+        self.linear3 = nn.Linear(32, output_dim * n_quant)
 
     def forward(self, ob):
         x = self.relu(self.linear1(ob))
-        return self.linear2(x).view(-1, self.n_action, self.n_quant)
+        x=  torch.tanh(self.linear2(x))
+        return self.linear3(x).view(-1, self.n_action, self.n_quant)
+
+class Noisy_QR_DQN_Model(nn.Module):
+    def __init__(self, input_dim, output_dim, n_quant):
+        super(Noisy_QR_DQN_Model, self).__init__()
+        self.n_quant = n_quant
+        self.n_action = output_dim
+        self.linear1 = dqn_model.NoisyLinear(input_dim, 64)
+        self.linear2 = dqn_model.NoisyLinear(64, 32)
+        self.relu = nn.ReLU()
+        self.linear3 = dqn_model.NoisyLinear(32, output_dim * n_quant)
+
+    def forward(self, ob):
+        x = self.relu(self.linear1(ob))
+        x=  torch.tanh(self.linear2(x))
+        return self.linear3(x).view(-1, self.n_action, self.n_quant)
+
+
+
+class RainbowDQN(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(RainbowDQN, self).__init__()
+        self.fc_val = nn.Sequential(
+            dqn_model.NoisyLinear(input_dim, 256),
+            nn.ReLU(),
+            dqn_model.NoisyLinear(256, N_ATOMS)
+        )
+        self.fc_adv = nn.Sequential(
+            dqn_model.NoisyLinear(input_dim, 256),
+            nn.ReLU(),
+            dqn_model.NoisyLinear(256, output_dim * N_ATOMS)
+        )
+        self.register_buffer("supports", torch.arange(Vmin, Vmax + DELTA_Z, DELTA_Z))
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, x):
+        batch_size = x.size()[0]
+        val_out = self.fc_val(x).view(batch_size, 1, N_ATOMS)
+        adv_out = self.fc_adv(x).view(batch_size, -1, N_ATOMS)
+        adv_mean = adv_out.mean(dim=1, keepdim=True)
+        return val_out + (adv_out - adv_mean)
+
+    def both(self, x):
+        cat_out = self(x)
+        probs = self.apply_softmax(cat_out)
+        weights = probs * self.supports
+        res = weights.sum(dim=2)
+        return cat_out, res
+
+    def qvals(self, x):
+        return self.both(x)[1]
+
+    def apply_softmax(self, t):
+        return self.softmax(t.view(-1, N_ATOMS)).view(t.size())
 
 
 class FRAPModel(nn.Module):

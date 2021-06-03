@@ -1,5 +1,23 @@
 import numpy as np
 
+
+# n-step
+REWARD_STEPS = 1
+
+# priority replay
+PRIO_REPLAY_ALPHA = 0.6
+BETA_START = 0.4
+BETA_FRAMES = 100000
+
+# C51
+Vmax = 10
+Vmin = -10
+N_ATOMS = 51
+DELTA_Z = (Vmax - Vmin) / (N_ATOMS - 1)
+
+# contains all of the intersections
+
+
 dic_agent_conf={
         'att_regularization': False,
         'rularization_rate': 0.03,
@@ -63,7 +81,7 @@ dic_path = {
 
 # MODEL_NAME = 'MLP'
 MODEL_NAME = 'MLP'
-with_Speed = False
+with_Speed = True
 
 FRAP_intersections = [[11, 17],
                       [4, 19],
