@@ -440,6 +440,29 @@ class ExperienceSourceFirstLast(ptan.experience.ExperienceSource):
         self.roads = roads
         self.agent_id_list = agent_id_list
 
+        self.three_to_four_mapping = {
+            # action [1,2,3] should be [2,5,6]
+            1: 2, 2: 5, 3: 6
+        }
+        self.four_to_three_mapping = {
+            y: x for x, y in self.three_to_four_mapping.items()
+        }
+        self.inverse_clockwise_mapping = {
+            1: 3,
+            2: 4,
+            3: 1,
+            4: 2,
+            5: 8,
+            6: 5,
+            7: 6,
+            8: 7
+        }
+
+        self.clockwise_mapping = {
+            y: x for x, y in self.inverse_clockwise_mapping.items()
+        }
+
+
     def __iter__(self):
         states, agent_states, histories, cur_rewards, cur_steps = [], [], [], [], []
         env_lens = []
@@ -511,7 +534,9 @@ class ExperienceSourceFirstLast(ptan.experience.ExperienceSource):
 
                     if state is not None:
                         for agent_id in self.agent_id_list:
-                            history.append(Experience(state=state[agent_id]['lane_vehicle_num'], action=action_n[agent_id], reward=r[agent_id], done=is_done[agent_id], next_state=next_state[agent_id]['lane_vehicle_num']))
+                            obs, action, next_obs = self.rotate(state[agent_id]['lane_vehicle_num'],
+                                        action_n[agent_id], next_state[agent_id]['lane_vehicle_num'], agent_id=None)
+                            history.append(Experience(state=obs, action=action, reward=r[agent_id], done=is_done[agent_id], next_state=next_obs))
                             cur_rewards[idx] += r[agent_id]
                             cur_steps[idx] += 1
 
@@ -542,25 +567,52 @@ class ExperienceSourceFirstLast(ptan.experience.ExperienceSource):
                 global_ofs += len(action_n)
             iter_idx += 1
 
+    def obs_clock_wise_rotate(self, obs):
+        new_obs = copy.deepcopy(obs)
+        new_obs[3: 12] = obs[0: 9]
+        new_obs[0: 3] = obs[9: 12]
+        new_obs[15: 24] = obs[12: 21]
+        new_obs[12: 15] = obs[21: 24]
+        return new_obs
+
+    def rotate(self, ob, action, next_ob, agent_id=None):
+        if agent_id is None:
+            return ob, action, next_ob
+        else:
+            if -1 in self.agents[agent_id]:
+                idx = self.agents[agent_id][:4].index(-1)
+                while idx < 3:
+                    action = self.clockwise_mapping[action + 1] - 1
+                    ob[:24] = self.obs_clock_wise_rotate(ob[:24])
+                    next_ob[:24] = self.obs_clock_wise_rotate(next_ob[:24])
+                    if with_Speed:
+                        ob[24:] = self.obs_clock_wise_rotate(ob[24:])
+                        next_ob[24:] = self.obs_clock_wise_rotate(next_ob[24:])
+                    idx += 1
+                action = self.four_to_three_mapping[action + 1] - 1
+                assert action < 3
+            return ob, next_ob
+
+
     def extract_rewards(self, next_state):
         rewards = {}
         for agent_id in self.agent_id_list:
             lane_vehicle_num = next_state["{}_lane_vehicle_num".format(agent_id)]
-            lane_num_divide_length = copy.deepcopy(lane_vehicle_num[1:])
-            lane_num_divide_length = np.array(lane_num_divide_length, dtype=float)
+            # lane_num_divide_length = copy.deepcopy(lane_vehicle_num[1:])
+            # lane_num_divide_length = np.array(lane_num_divide_length, dtype=float)
+            #
+            # roads_id = agents[agent_id][:4]
+            #
+            # for idx, road_id in enumerate(roads_id):
+            #     if road_id == -1: continue
+            #     lane_num_divide_length[idx * 3:(idx + 1) * 3] = lane_num_divide_length[idx * 3:(idx + 1) * 3] / \
+            #                                                     roads[road_id]['length'] * 100
+            #     lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] \
+            #         = lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] / roads[road_id]['length'] * 100
+            pressure = (np.sum(lane_vehicle_num[13: 25]) - np.sum(lane_vehicle_num[1: 13])) / args.action_interval
 
-            roads_id = agents[agent_id][:4]
-
-            for idx, road_id in enumerate(roads_id):
-                if road_id == -1: continue
-                lane_num_divide_length[idx * 3:(idx + 1) * 3] = lane_num_divide_length[idx * 3:(idx + 1) * 3] / \
-                                                                roads[road_id]['length'] * 100
-                lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] \
-                    = lane_num_divide_length[idx * 3 + 12:(idx + 1) * 3 + 12] / roads[road_id]['length'] * 100
-            # pressure = (np.sum(lane_vehicle_num[13: 25]) - np.sum(lane_vehicle_num[1: 13])) / args.action_interval
-
-            pressure = (np.sum(lane_num_divide_length[12:]) - np.sum(
-                lane_num_divide_length[:12])) * args.action_interval
+            # pressure = (np.sum(lane_num_divide_length[12:]) - np.sum(
+            #     lane_num_divide_length[:12])) * args.action_interval
             rewards[agent_id] = pressure
         return rewards
     def extract_state(self, obs):
@@ -579,9 +631,6 @@ class ExperienceSourceFirstLast(ptan.experience.ExperienceSource):
 def calc_loss(batch, batch_weights, net, tgt_net, gamma, device="cpu"):
     states, actions, rewards, dones, next_states = common.unpack_batch(batch)
     batch_size = len(batch)
-
-    print("actions:", actions)
-
     states_v = torch.tensor(states, dtype=torch.float32).to(device)
     actions_v = torch.tensor(actions, dtype=torch.long).to(device)
     next_states_v = torch.tensor(next_states, dtype=torch.float32).to(device)
@@ -645,11 +694,13 @@ def train():
 
     frame_idx = 0
     beta = BETA_START
+    epoch = 0
 
     with common.RewardTracker(writer, -1) as reward_tracker:
         while True:
-            if frame_idx % 50 == 0:
+            if frame_idx % 100 == 0:
                 print("Frameidx:", frame_idx)
+                sys.stdout.flush()
 
             frame_idx += 1
             buffer.populate(1)
@@ -657,7 +708,7 @@ def train():
 
             new_rewards = exp_source.pop_total_rewards()
             if new_rewards:
-                if reward_tracker.reward(new_rewards[0], frame_idx):
+                if reward_tracker.reward(new_rewards[0] / 360, frame_idx):
                     break
 
             if len(buffer) < 200:
@@ -675,12 +726,12 @@ def train():
             if frame_idx % agent.update_target_model_freq == 0:
                 agent.target_model.sync()
 
-            if frame_idx % 500 == 0:
+            if frame_idx % 2000 == 0:
                 if not os.path.exists(args.save_dir):
                     os.makedirs(args.save_dir)
-                agent.save_model(args.save_dir, e)
+                agent.save_model(args.save_dir, frame_idx)
+            epoch += 1
 
-    agent.save_model()
 
 if __name__ == "__main__":
     # arg parse
