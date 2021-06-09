@@ -4,37 +4,53 @@ In this file, you should implement your `AgentSpec` instance, and **must** name 
 As an example, this file offers a standard implementation.
 """
 
-import pickle
+import os
+
 import torch
 import torch.nn.functional as F
-import os
+
 path = os.path.split(os.path.realpath(__file__))[0]
 import sys
 sys.path.append(path)
 import random
-from model import BaseModel, FRAPModel
+# from model import BaseModel, FRAPModel
 
-import gym
-
-from pathlib import Path
-import pickle
-import gym
-
-import tensorflow as tf
-import keras
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.optimizers import Adam, RMSprop, SGD
 import os
 from collections import deque
 from configs import *
 import numpy as np
-from keras.layers.merge import concatenate
-from keras.layers import Input, Dense, Conv2D, Flatten
-from keras.models import Model
+
 
 # contains all of the intersections
+class BaseModel(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(BaseModel, self).__init__()
+        # self.conv1 = nn.Conv1d(in_channels=1, out_channels=4, kernel_size=(3), padding=(1))
+        self.flatten = nn.Flatten()
+        # self.embedding = nn.Embedding(50, 64)
+        self.linear1 = nn.Linear(input_dim, 1024)
+        # self.linear1 = nn.Linear(64, 32)
+        self.relu = nn.ReLU()
+        self.linear2 = nn.Linear(1024, 1024)
+        self.tanh = nn.Tanh()
+        self.linear3 = nn.Linear(1024, output_dim)
 
+    def forward(self, ob):
+        # idx = torch.where(ob >= 50)
+        # ob[idx] = 49
+        #
+        # assert (ob < 50).all()
+        # assert (ob >= 0).all()
+        # ob: (bsz, 72)
+        # x = self.embedding(ob) # x: (bsz, 72, 64)
+        # x = self.relu(x)
+        x = self.linear1(ob)  # (bsz, 72, 32)
+        x = self.relu(x)
+        x = self.flatten(x)
+        x = self.linear2(x)
+        x = self.linear3(self.relu(x))
+
+        return x
 
 class TestAgent():
     def __init__(self):
@@ -68,10 +84,11 @@ class TestAgent():
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=0.001)
         # Remember to uncomment the following lines when submitting, and submit your model file as well.
         path = os.path.split(os.path.realpath(__file__))[0]
-        self.load_model(path, 99)
+        self.load_model(path, 105)
         self.target_model = self._build_model()
         self.update_target_network()
 
+        self.last_observations = None
 
 
     ################################
@@ -111,7 +128,10 @@ class TestAgent():
         if MODEL_NAME == 'MLP':
             actions = {}
             for agent_id in self.agent_list:
-                action = self.get_action(observations_for_agent[agent_id]['lane_vehicle_num'])
+                action = self.get_action(np.concatenate([
+                    observations_for_agent[agent_id]['lane_vehicle_num'],
+                    observations_for_agent[agent_id]['lane_speed']
+                ]))
                 actions[agent_id] = action
                 self.last_change_step[agent_id] = action
         else:
@@ -130,6 +150,50 @@ class TestAgent():
 
         return actions
 
+
+    def get_phase_pressures(self, lane_vehicle_num):
+        pressures = []
+        for i in range(8):
+            in_lanes = self.phase_lane_map_in[i]
+            out_lanes = self.phase_lane_map_out[i]
+            pressure = 0
+            for in_lane in in_lanes:
+                pressure += lane_vehicle_num[in_lane] * 3
+            for out_lane in out_lanes:
+                pressure -= lane_vehicle_num[out_lane]
+            pressures.append(pressure)
+        # # print("pressures: ", pressures)
+        return pressures
+
+    def get_unavailable_phases(self, lane_vehicle_num):
+        self.phase_lane_map_in = [[1, 7], [2, 8], [4, 10], [5, 11], [2, 1], [5, 4], [8, 7], [11, 10]]
+        unavailable_phases = []
+        not_exist_lanes = []
+        for i in range(1, 25):
+            if lane_vehicle_num[i] < 0:
+                not_exist_lanes.append(i)
+        for lane in not_exist_lanes:
+            for phase_id, in_lanes in enumerate(self.phase_lane_map_in):
+                phase_id += 1
+                if lane in in_lanes and phase_id not in unavailable_phases:
+                    unavailable_phases.append(phase_id)
+
+        return unavailable_phases
+
+    def get_action_pressure(self, lane_vehicle_num):
+        pressures = self.get_phase_pressures(lane_vehicle_num)
+        unavailable_phases = self.get_unavailable_phases(lane_vehicle_num)
+        # if len(unavailable_phases) > 0:
+        #     # print("unavailable_phases: ", unavailable_phases)
+
+        max_pressure_id = np.argmax(pressures) + 1
+        while (max_pressure_id in unavailable_phases):
+            pressures[max_pressure_id - 1] -= 999999
+            max_pressure_id = np.argmax(pressures) + 1
+        # # print(max_pressure_id)
+        return max_pressure_id
+
+
     def act(self, obs):
         observations = obs['observations']
         info = obs['info']
@@ -144,22 +208,51 @@ class TestAgent():
                 observations_for_agent[observations_agent_id] = {}
             observations_for_agent[observations_agent_id][observations_feature] = val[1:]
 
-        # Get actions
-        if MODEL_NAME == 'MLP':
-            for agent in self.agent_list:
-                self.epsilon = 0
-                actions[agent] = self.get_action(np.concatenate([observations_for_agent[agent]['lane_vehicle_num'],
-                                                                 observations_for_agent[agent]['lane_speed']])) + 1
-        else:
-            for agent_id in self.agent_list:
-                lane_vehicle_num = observations_for_agent[agent_id]['lane_vehicle_num']
-                pressures = []
-                for i in range(8):
-                    pressure_i = lane_vehicle_num[FRAP_intersections[i][1]] - lane_vehicle_num[FRAP_intersections[i][0]]
-                    pressures.append([pressure_i, Phase_to_FRAP_Phase[self.last_change_step[agent_id]][i]])
 
-                action = self.get_action(pressures) + 1
-                actions[agent_id] = action
+        if self.last_observations is None:
+            for agent in self.agent_list:
+                # select the now_step
+                for k, v in observations_for_agent[agent].items():
+                    now_step = v[0]
+                    break
+                lane_vehicle_num = observations_for_agent[agent]["lane_vehicle_num"]
+                # print("agent id: ", agent)
+                # print("lane vehicle: ", lane_vehicle_num)
+
+                action = self.get_action_pressure(lane_vehicle_num)
+
+                step_diff = now_step - self.last_change_step[agent]
+                if (step_diff >= self.green_sec):
+                    self.now_phase[agent] = action
+                    self.last_change_step[agent] = now_step
+
+                actions[agent] = self.now_phase[agent]
+
+            self.last_observations = observations
+
+        else:
+            for agent in self.agent_list:
+                self.last_observations
+
+
+        # Get actions
+        # if MODEL_NAME == 'MLP':
+        #     for agent in self.agent_list:
+        #         self.epsilon = 0
+        #         actions[agent] = self.get_action(np.concatenate([
+        #             observations_for_agent[agent]['lane_vehicle_num'],
+        #             observations_for_agent[agent]['lane_speed']
+        #         ]))
+        # else:
+        #     for agent_id in self.agent_list:
+        #         lane_vehicle_num = observations_for_agent[agent_id]['lane_vehicle_num']
+        #         pressures = []
+        #         for i in range(8):
+        #             pressure_i = lane_vehicle_num[FRAP_intersections[i][1]] - lane_vehicle_num[FRAP_intersections[i][0]]
+        #             pressures.append([pressure_i, Phase_to_FRAP_Phase[self.last_change_step[agent_id]][i]])
+        #
+        #         action = self.get_action(pressures) + 1
+        #         actions[agent_id] = action
 
         return actions
 
@@ -186,7 +279,7 @@ class TestAgent():
 
         # Neural Net for Deep-Q learning Model
         if MODEL_NAME == 'MLP':
-            return BaseModel(input_dim=self.ob_length * 2, output_dim=self.action_space).cuda()
+            return BaseModel(input_dim=72 + 8 + 8, output_dim=self.action_space).cuda()
         else:
             return FRAPModel(relations=relations)
 
@@ -224,7 +317,7 @@ class TestAgent():
             self.epsilon *= self.epsilon_decay
 
     def load_model(self, dir="model/dqn", step=0):
-        name = "model_{}.ckpt".format(step)
+        name = f"../supervise_model/model_{step}_48_MLP.ckpt"
         model_name = os.path.join(dir, name)
         print("load from " + model_name)
         self.model.load_state_dict(torch.load(model_name))

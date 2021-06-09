@@ -2,20 +2,41 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from configs import *
-from lib import dqn_model, common
+try:
+    from configs import *
+except:
+    from agent.configs import *
+# from lib import dqn_model, common
 
 
 class BaseModel(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(BaseModel, self).__init__()
-        self.linear1 = nn.Linear(input_dim, 20)
+        # self.conv1 = nn.Conv1d(in_channels=1, out_channels=4, kernel_size=(3), padding=(1))
+        self.flatten = nn.Flatten()
+        self.embedding = nn.Embedding(50, 64)
+        self.linear1 = nn.Linear(64, 32)
         self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(20, output_dim)
+        self.linear2 = nn.Linear(32 * 72, 32)
+        self.tanh = nn.Tanh()
+        self.linear3 = nn.Linear(32, output_dim)
 
     def forward(self, ob):
-        x = self.relu(self.linear1(ob))
-        return self.linear2(x)
+
+        idx = torch.where(ob >= 50)
+        ob[idx] = 49
+
+        # ob: (bsz, 72)
+        x = self.embedding(ob) # x: (bsz, 72, 64)
+        x = self.relu(x)
+        x = self.linear1(x) # (bsz, 72, 32)
+        x = self.relu(x)
+        x = self.flatten(x)
+        x = self.linear2(x)
+        x = self.linear3(self.relu(x))
+
+        return x
+
 
 class Base_QR_DQN_Model(nn.Module):
     def __init__(self, input_dim, output_dim, n_quant):
@@ -89,9 +110,11 @@ class RainbowDQN(nn.Module):
 class FRAPModel(nn.Module):
     def __init__(self, relations):
         super(FRAPModel, self).__init__()
-        self.demand_embedding = nn.Linear(2, 4)
-        self.conv2d1 = nn.Conv2d(in_channels=8, out_channels=20, kernel_size=(1,1),stride=(1,1))
-        self.relations = torch.tensor(relations)  # (1, 8, 7)
+
+        self.demand_embedding = nn.Sequential(nn.Linear(2, 8), nn.ReLU(), nn.Linear(8, 16))
+        self.pair_proj = nn.Linear(32, 4)
+        self.conv2d1 = nn.Conv2d(in_channels=4, out_channels=20, kernel_size=(1,1),stride=(1,1))
+        self.relations = torch.tensor(relations).cuda()  # (1, 8, 7)
         self.relation_embedding = nn.Embedding(2, 4)
         self.relation_conv2d = nn.Conv2d(in_channels=4, out_channels=20, kernel_size=(1,1), stride=(1,1))
         self.conv2d2 = nn.Conv2d(in_channels=20, out_channels=20, kernel_size=(1,1), stride=(1,1))
@@ -103,11 +126,14 @@ class FRAPModel(nn.Module):
         :return: distribution of actions
         '''
         bsz = ob.shape[0]
-        demands = self.demand_embedding(ob.reshape(-1, 2)).reshape(bsz, 8, 4)
-        # demand: [bsz, 8, 4]
-        pair_representation = torch.zeros([bsz, 8, 7, 8])
-        for i, demand in enumerate(demands):
-            # demand: [8, 4]
+        demands = self.demand_embedding(ob.reshape(-1, 2)).reshape(bsz, 8, 16)
+
+        phase_demands = torch.bmm(torch.tensor([Phase_to_FRAP_Phase] * bsz, dtype=torch.float32).cuda(), demands)
+
+        # demand: [bsz, 8, 16]
+        pair_representation = torch.zeros([bsz, 8, 7, 32])
+        for i, demand in enumerate(phase_demands):
+            # demand: [8, 16]
             for s in range(8):
                 count = 0
                 for k in range(8):
@@ -115,7 +141,10 @@ class FRAPModel(nn.Module):
                     pair_representation[i][s][count] = torch.cat([demand[s], demand[k]])
                     count += 1
 
-        # pair_representation: (bsz, 8, 7, 8) -> (bsz, 8, 8, 7) --> x: (bsz, 20, 8, 7)
+        # pair_representation: (bsz, 8, 7, 32) --> (bsz, 8, 7, 4)
+        pair_representation = self.pair_proj(pair_representation.cuda())
+
+        # pair_representation: (bsz, 8, 7, 4) -> (bsz, 4, 8, 7) --> x: (bsz, 20, 8, 7)
         x = self.conv2d1(pair_representation.permute(0, 3, 1, 2))
 
         # Phase competition mask
