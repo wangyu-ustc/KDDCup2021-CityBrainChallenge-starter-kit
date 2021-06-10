@@ -51,7 +51,25 @@ PHASE_LANE = {
 }
 
 PHASE_IN_ROAD = {
-    1:1
+    1: [0, 2],
+    2: [0, 2],
+    3: [1, 3],
+    4: [1, 3],
+    5: [0],
+    6: [1],
+    7: [2],
+    8: [3]
+}
+
+PHASE_OUT_ROAD = {
+    1: [1, 3],
+    2: [0, 2],
+    3: [0, 2],
+    4: [1, 3],
+    5: [1, 2],
+    6: [3, 2],
+    7: [3, 0],
+    8: [0, 1]
 }
 
 IN_OUT_LANE = {
@@ -106,7 +124,7 @@ class TestAgent():
                 "out_weight": 0.5,
                 "speed_ratio": 1,
                 "in_weight": 1,
-                "rounds": 0,
+                "rounds": 1,
                 "mp_step": 2500,
             }
 
@@ -485,212 +503,8 @@ class TestAgent():
         vis[3,3] = vis[3,4] = vis[4,3] = vis[4,4] = action
         print(vis)
 
-    def act(self, obs):
-        """ !!! MUST BE OVERRIDED !!!
-        """
-        # here obs contains all of the observations and infos
 
-        # observations is returned 'observation' of env.step()
-        # info is returned 'info' of env.step()
-        observations = obs['observations']
-        info = obs['info']
-        actions = {}
-
-
-        # preprocess observations
-        new_obs = {}  # 嵌套字典 第一级key为agent_id 第二级key为feature
-        for key, val in observations.items():
-            agent_id = int(key.split('_')[0])  # 获取agent_id
-            feature = key[key.find('_') + 1:]  # feature为lane_num或lane_speed
-            if (agent_id not in new_obs.keys()):
-                new_obs[agent_id] = {}
-            new_obs[agent_id][feature] = val
-            step = val[0]
-
-        lane_car = {}  # key为lane_id val为car_id是一个list
-        car_speed = {}  # key为car_id val为速度
-        for car_id, car_info in info.items():
-            cur_lane = car_info['drivable'][0]
-            cur_speed = car_info['speed'][0]
-            if cur_lane not in lane_car:
-                lane_car[cur_lane] = [car_id]
-            elif cur_lane in lane_car:
-                lane_car[cur_lane].append(car_id)
-            car_speed[car_id] = cur_speed
-
-
-        # if step < 200:
-        #     self.params['mean_tff'] = 1000
-        #     # elif step>=100 and step<200:
-        #     #     self.params[]
-        # elif step >= 200:
-        #     self.params['mean_tff'] = 500
-
-
-        # if step < 1000:
-        #     self.params['rounds'] = 0
-        # else:
-        #     self.params['rounds'] = 1
-
-
-        self.agents_lane_waiting_num = {}
-        self.agents_lane_smoothed_vehicle_num = {}
-        self.agents_out_rest_capacity = {}
-        for agent_id in self.agent_list:
-            agent_roads = self.agents[agent_id]  # list 长度为8 0~3 inroads 4~7 outroads 值为-1表示没有路
-            inroads_id = []
-            for road_id in agent_roads[0:4]:
-                if road_id != -1:
-                    inroads_id.append(road_id)
-                else:
-                    inroads_id.append(-1)
-
-            outroads_id = []
-            for road_id in agent_roads[4:8]:
-                if road_id != -1:
-                    outroads_id.append(road_id)
-                else:
-                    outroads_id.append(-1)
-
-            self.agents_lane_smoothed_vehicle_num[agent_id] = {}
-            self.agents_out_rest_capacity[agent_id] = {}
-
-            re_inroad_lane, lane_waiting_num = self.cal_waiting(
-                lane_car=lane_car,
-                car_speed=car_speed,
-                inroads=inroads_id,
-                outroads=outroads_id,
-                infos=info,
-                agent_id=agent_id,
-                step=step,
-            )  # waiting_num的key是lane_id
-
-            self.agents_lane_waiting_num[agent_id] = {}
-            self.agents_lane_waiting_num[agent_id]['re_inroad_lane'] = re_inroad_lane
-            self.agents_lane_waiting_num[agent_id]['lane_waiting_num'] = lane_waiting_num
-
-
-        for _ in range(self.params['rounds']):
-
-            for agent_id in self.agent_list:
-                agent_adj = []
-                for in_road_id in self.agents[agent_id][:4]:
-                    if in_road_id == -1:
-                        agent_adj.append(-1)
-                    else:
-                        agent_adj.append(self.roads[in_road_id]['start_inter'])
-
-
-                re_inroad_lane = self.agents_lane_waiting_num[agent_id]['re_inroad_lane']
-                lane_waiting_num = self.agents_lane_waiting_num[agent_id]['lane_waiting_num']
-
-                for i in range(1, 13):
-
-                    if i in re_inroad_lane:
-
-                        lane = re_inroad_lane[i]
-
-                        if lane not in lane_waiting_num:
-                            continue
-
-                        # waiting_num = lane_waiting_num[lane]
-                        out_agent_pressure = 0
-
-                        out_road_idx = (IN_OUT_LANE[i][0] - 1 - 12) // 3
-                        out_agent_id = agent_adj[out_road_idx]
-
-                        out_in_road_id = self.agents[agent_id][4:][out_road_idx]
-
-                        # 检查该out_agent_id 是否在agent_list里面
-                        out_agent_pressure += self.agents_out_rest_capacity[agent_id][lane]
-
-                        if out_agent_id in self.agents_lane_waiting_num.keys():
-
-                            for j in range(3):
-
-                                if (out_in_road_id * 100 + j) not in self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num']:
-                                    # this out agent has no vehicle in the road
-                                    # print("out_agent:")
-                                    # print("road id:", self.agents[agent_id][out_road_idx])
-                                    # print("road information:", self.roads[self.agents[agent_id][out_road_idx]])
-                                    # print("agents[outroad_id]", self.agents[out_agent_id])
-                                    # self.visualize(new_obs[out_agent_id]['lane_vehicle_num'], 0)
-                                    continue
-
-                                out_agent_pressure += self.params['out_weight'] * self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num'][(out_in_road_id * 100 + j)] \
-                                # print("waiting_num += ", self.params['out_weight'] * self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num'][(out_in_road_id * 100 + j)])
-                        in_road_id = lane // 100
-
-                        last_agent = self.roads[lane // 100]['start_inter']
-
-                        in_outroad_pressure = 0
-                        # 检查该out_agent_id 是否在agent_list里面
-                        if last_agent in self.agent_list:
-                            in_road_idx_for_last_agent = self.agents[last_agent][4:].index(in_road_id)
-
-                            straight_lane = (in_road_idx_for_last_agent + 2) % 4 * 100 + 1
-                            straight_lane_num = 0 if straight_lane not in lane_car else len(lane_car[straight_lane])
-                            # straight_lane_num = 0 if straight_lane not in self.agents_lane_waiting_num[last_agent].keys() else self.agents_lane_waiting_num[last_agent][straight_lane]
-                            turn_left_lane = (in_road_idx_for_last_agent + 3) % 4 * 100 + 0
-                            turn_left_lane_num = 0 if turn_left_lane not in lane_car else len(lane_car[turn_left_lane])
-                            # turn_left_lane_num = 0 if turn_left_lane not in self.agents_lane_waiting_num[last_agent].keys() else self.agents_lane_waiting_num[last_agent][turn_left_lane]
-                            turn_right_lane = (in_road_idx_for_last_agent + 1) % 4 * 100 + 2
-                            turn_right_lane_num = 0 if turn_right_lane not in lane_car else len(lane_car[turn_right_lane])
-
-                            # 右转的暂时不考虑
-                            in_outroad_pressure = (straight_lane_num + turn_left_lane_num + turn_right_lane_num) / 3
-
-
-                        # lane_waiting_num[lane] = min(out_agent_pressure, self.agents_lane_smoothed_vehicle_num[agent_id][lane])
-                        # print("before GNN: lane_waiting_num[lane]", lane_waiting_num[lane])
-                        # print("left: ", out_agent_pressure, "right:", in_outroad_pressure + lane_waiting_num[lane])
-                        # print(min(out_agent_pressure, in_outroad_pressure + lane_waiting_num[lane]))
-
-                        if not out_agent_pressure >= lane_waiting_num[lane]:
-                            print(out_agent_pressure)
-                            print(lane_waiting_num[lane])
-                        assert in_outroad_pressure + lane_waiting_num[lane] >= lane_waiting_num[lane]
-
-                        lane_waiting_num[lane] = min(out_agent_pressure, in_outroad_pressure * self.params['in_weight'] + lane_waiting_num[lane])
-                        # lane_waiting_num[lane] = min(out_agent_pressure, in_outroad_pressure + self.agents_lane_waiting_num[agent_id][lane])
-
-                        # if out_agent_id in self.agents_lane_waiting_num.keys():
-                        #     out_re_inroad_lane = self.agents_lane_waiting_num[out_agent_id]['re_inroad_lane']
-                        #     out_lane_waiting_num = self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num']
-                        #
-                        #     out_in_road_idx = ((out_road_idx) + 2) % 4 # \in (0, 1, 2, 3)
-                        #
-                        #     out_inroad_lane_idx = [(out_in_road_idx) * 3 + 1, (out_in_road_idx) * 3 + 2, (out_in_road_idx) * 3 + 3]
-                        #
-                        #     for idx in out_inroad_lane_idx:
-                        #
-                        #         if idx not in out_re_inroad_lane:
-                        #             print("-" * 40)
-                        #             print("out_road_idx:", out_road_idx)
-                        #             print("out_in_road_idx: ", out_in_road_idx)
-                        #             print("out_inroad_lane_idx: ", out_inroad_lane_idx)
-                        #             print("out_re_inroad_lane:", out_re_inroad_lane)
-                        #             print("agent_adj:", agent_adj)
-                        #             print("agents[agent_id]: ", self.agents[agent_id])
-                        #             print("out_agent_id:", out_agent_id)
-                        #             print("road id:", self.agents[agent_id][out_road_idx])
-                        #             print("road information:", self.roads[self.agents[agent_id][out_road_idx]])
-                        #             print("agents[outroad_id]", self.agents[out_agent_id])
-                        #             self.visualize(new_obs[agent_id]['lane_vehicle_num'], 0)
-                        #             self.visualize(new_obs[out_agent_id]['lane_vehicle_num'], 0)
-                        #             print("-" * 40)
-                        #             continue
-                        #
-                        #         if out_re_inroad_lane[idx] not in out_lane_waiting_num:
-                        #             continue
-                        #         out_waiting_num = out_lane_waiting_num[out_re_inroad_lane[idx]]
-                        #         waiting_num += self.params['out_weight'] * out_waiting_num
-
-
-                self.agents_lane_waiting_num[agent_id]['lane_waiting_num'] = lane_waiting_num
-
-
-        # get actions
+    def get_actions(self, new_obs, observations, actions, lane_car, car_speed, info):
         for agent_id in self.agent_list:
             # self.visualize(new_obs[agent_id]['lane_vehicle_num'], 0)
             agent_obs = new_obs[agent_id]
@@ -939,171 +753,432 @@ class TestAgent():
             self.last_max_waiting[agent_id] = max_waiting
             self.last_max_pressure[agent_id] = max_pressure
 
-        self.agents_adj = {}
+
+    def act(self, obs):
+        """ !!! MUST BE OVERRIDED !!!
+        """
+        # here obs contains all of the observations and infos
+
+        # observations is returned 'observation' of env.step()
+        # info is returned 'info' of env.step()
+        observations = obs['observations']
+        info = obs['info']
+        actions = {}
+
+
+        # preprocess observations
+        new_obs = {}  # 嵌套字典 第一级key为agent_id 第二级key为feature
+        for key, val in observations.items():
+            agent_id = int(key.split('_')[0])  # 获取agent_id
+            feature = key[key.find('_') + 1:]  # feature为lane_num或lane_speed
+            if (agent_id not in new_obs.keys()):
+                new_obs[agent_id] = {}
+            new_obs[agent_id][feature] = val
+            step = val[0]
+
+        lane_car = {}  # key为lane_id val为car_id是一个list
+        car_speed = {}  # key为car_id val为速度
+        for car_id, car_info in info.items():
+            cur_lane = car_info['drivable'][0]
+            cur_speed = car_info['speed'][0]
+            if cur_lane not in lane_car:
+                lane_car[cur_lane] = [car_id]
+            elif cur_lane in lane_car:
+                lane_car[cur_lane].append(car_id)
+            car_speed[car_id] = cur_speed
+
+
+        # if step < 200:
+        #     self.params['mean_tff'] = 1000
+        #     # elif step>=100 and step<200:
+        #     #     self.params[]
+        # elif step >= 200:
+        #     self.params['mean_tff'] = 500
+
+
+        # if step < 1000:
+        #     self.params['rounds'] = 0
+        # else:
+        #     self.params['rounds'] = 1
+
+
+        self.agents_lane_waiting_num = {}
+        self.agents_lane_smoothed_vehicle_num = {}
+        self.agents_out_rest_capacity = {}
         for agent_id in self.agent_list:
-            agent_adj = []
-            for in_road_id in self.agents[agent_id][:4]:
-                if in_road_id == -1:
-                    agent_adj.append(-1)
+            agent_roads = self.agents[agent_id]  # list 长度为8 0~3 inroads 4~7 outroads 值为-1表示没有路
+            inroads_id = []
+            for road_id in agent_roads[0:4]:
+                if road_id != -1:
+                    inroads_id.append(road_id)
                 else:
-                    agent_adj.append(self.roads[in_road_id]['start_inter'])
-            self.agents_adj[agent_id] = agent_adj
+                    inroads_id.append(-1)
 
-
-        # refine actions
-        for agent_id in self.agent_list:
-
-            agent_adj = self.agents_adj[agent_id]
-
-            re_inroad_lane = self.agents_lane_waiting_num[agent_id]['re_inroad_lane']
-            lane_waiting_num = self.agents_lane_waiting_num[agent_id]['lane_waiting_num']
-
-            for i in range(1, 13):
-                if i not in re_inroad_lane: continue
-                lane = re_inroad_lane[i]
-
-                if lane not in lane_waiting_num:
-                    continue
-                    # 该车道无车辆排队, 其实也可能需要上游车道传入参数，暂时先不考虑
-
-                out_agent_capacity = 0
-
-                # 获得出路到达的agent的id
-                out_road_idx = (IN_OUT_LANE[i][0] - 1 - 12) // 3
-                out_agent_id = agent_adj[out_road_idx]
-
-                # 获得出路的id
-                out_road_id = self.agents[agent_id][4:][out_road_idx]
-
-                # 检查该out_agent_id是否在agent_list里面.
-                out_rest_capacity_each_lane = self.roads[out_road_id]['length'] / self.params['length']
-                if out_agent_id not in self.agent_list:
-                    # 认为它的capacity是无穷
-                    out_rest_capacity = [10000] * 3
+            outroads_id = []
+            for road_id in agent_roads[4:8]:
+                if road_id != -1:
+                    outroads_id.append(road_id)
                 else:
-                    out_rest_capacity = []
-                    for j in range(3):
-                        rest_capacity = out_rest_capacity_each_lane
+                    outroads_id.append(-1)
 
-                        out_agent_action = self.last_phase[out_agent_id] if out_agent_id not in actions else actions[out_agent_id]
+            self.agents_lane_smoothed_vehicle_num[agent_id] = {}
+            self.agents_out_rest_capacity[agent_id] = {}
 
-                        # 先将排队的车辆数减掉, TODO: 这里可以assert一些东西来确保正确性, 也可以尝试减掉smoothed的车辆数
-                        if out_road_id * 100 + j in lane_car:
-                            rest_capacity -= len(lane_car[out_road_id * 100 + j])
+            re_inroad_lane, lane_waiting_num = self.cal_waiting(
+                lane_car=lane_car,
+                car_speed=car_speed,
+                inroads=inroads_id,
+                outroads=outroads_id,
+                infos=info,
+                agent_id=agent_id,
+                step=step,
+            )  # waiting_num的key是lane_id
 
-                        # 检查该出路在out_agent那里是入路的第几个, 并检查是否在action的phase之内
-                        out_in_road_idx = self.agents[out_agent_id][:4].index(out_road_id) + 1
-                        if out_in_road_idx in PHASE_LANE[out_agent_action]:
-                            # TODO: 把这一个车道的下游的capacity加到现在的capacity上来
+            self.agents_lane_waiting_num[agent_id] = {}
+            self.agents_lane_waiting_num[agent_id]['re_inroad_lane'] = re_inroad_lane
+            self.agents_lane_waiting_num[agent_id]['lane_waiting_num'] = lane_waiting_num
 
-                            # 当前车道在下游agent的下游三车道的Capacity
-                            rest_capacity += self.agents_out_rest_capacity[out_agent_id][out_road_id * 100 + j]
+        # get actions
+        self.get_actions(new_obs, observations, actions, lane_car, car_speed, info)
 
-                        out_rest_capacity.append(rest_capacity)
+        for _ in range(self.params['rounds']):
 
-                # 至此, 我们获得了三条出路的所有 out_rest_capacity
-                # 接下来, 我们需要获得这条lane中的车的信息, 以及即将汇入这个车道的车的信息
+            self.agents_adj = {}
+            for agent_id in self.agent_list:
+                agent_adj = []
+                for in_road_id in self.agents[agent_id][:4]:
+                    if in_road_id == -1:
+                        agent_adj.append(-1)
+                    else:
+                        agent_adj.append(self.roads[in_road_id]['start_inter'])
+                self.agents_adj[agent_id] = agent_adj
 
-                full_pressure = 0
-                ending_car = 0
+            # refine actions
+            for agent_id in self.agent_list:
 
-                # 先对于当前车道中的车的信息进行处理
-                if out_agent_id not in self.agent_list:
-                    full_pressure += len(lane_car[lane])
-                else:
-                    out_agent_adj = self.agents_adj[out_agent_id]
-                    for car in lane_car[lane]:
-                        # TODO: 计算多少辆车可以在10s的间隙内通过到下一个路口
-                        # TODO: 现在就假设所有车都可以通过该路口
-                        if len(info[car]['route'] == 1):
-                            ending_car += 1
-                            continue
-                        next_road = info[car]['route'][2]
-                        diff = out_agent_adj.index(next_road) - out_agent_adj.index(out_road_id)
-                        if diff == 1:
-                            if out_rest_capacity[0] > 0:
-                                full_pressure += 1
-                                out_rest_capacity[0] -= 1
-                        if diff == 2 or diff == -2:
-                            if out_rest_capacity[1] > 0:
-                                full_pressure += 1
-                                out_rest_capacity[1] -= 1
-                        if diff == -1:
-                            full_pressure += 1
+                agent_adj = self.agents_adj[agent_id]
 
-                # 首先拿到当前lane的出发agent_id, 便于拿到汇入这个车道的所有车的信息
-                in_road_id = lane // 100
-                in_agent_id = self.roads[in_road_id]['start_inter']
-                if in_agent_id not in self.agent_list:
+                re_inroad_lane = self.agents_lane_waiting_num[agent_id]['re_inroad_lane']
+                lane_waiting_num = self.agents_lane_waiting_num[agent_id]['lane_waiting_num']
 
-                    # TODO: 将上一个路口中可能过来的车全部搜出来, 作为inroad_num
-                    in_road_idx_for_in_agent = self.agents[in_agent_id][4:].index(in_road_id)
+                for i in range(1, 13):
+                    if i not in re_inroad_lane: continue
+                    lane = re_inroad_lane[i]
 
-                    for i in range(1, 4):
-                        cur_road_id = self.agents[in_agent_id][4:][(in_road_idx_for_in_agent + i) % 4]
-                        # i == 1: for turn right road
-                        # i == 2: for go straight road
-                        # i == 3: for turn left road
+                    if lane not in lane_waiting_num:
+                        continue
+                        # 该车道无车辆排队, 其实也可能需要上游车道传入参数，暂时先不考虑
 
-                        if out_agent_id not in self.agent_list:
-                            full_pressure += len(lane_car[cur_road_id*100 + (3-i)])
-                            continue
+                    out_agent_capacity = 0
 
-                        out_agent_adj = self.agents_adj[out_agent_id]
+                    # 获得出路到达的agent的id
+                    out_road_idx = (IN_OUT_LANE[i][0] - 1 - 12) // 3
+                    out_agent_id = agent_adj[out_road_idx]
 
-                        for car in lane_car[cur_road_id*100 + (3 - i)]:
-                            # TODO: 计算多少辆车可以在10s的间隙内通过到这里.
-                            # TODO: 暂时先就假设全部都可以通过来
+                    # 获得出路的id
+                    out_road_id = self.agents[agent_id][4:][out_road_idx]
 
-                            if len(info[car]['route']) < 4:
-                                # 说明这辆车即将到达终点, 没有下一个可言, 那么exception += 1
+                    # 检查该out_agent_id是否在agent_list里面.
+                    if out_road_id == -1:
+                        # TODO: 说明这辆车停在这里是为了直行而非左转
+                        continue
+                    out_rest_capacity_each_lane = self.roads[out_road_id]['length'] / self.params['length']
+                    if out_agent_id not in self.agent_list:
+                        # 认为它的capacity是无穷
+                        out_rest_capacity = [10000] * 3
+                    else:
+                        out_rest_capacity = []
+                        for j in range(2):
+                            rest_capacity = out_rest_capacity_each_lane
+
+                            out_agent_action = self.last_phase[out_agent_id] if out_agent_id not in actions else actions[out_agent_id]
+
+                            # 先将排队的车辆数减掉, TODO: 这里可以assert一些东西来确保正确性, 也可以尝试减掉smoothed的车辆数
+                            if out_road_id * 100 + j in lane_car:
+                                rest_capacity -= len(lane_car[out_road_id * 100 + j])
+
+                            # 检查该出路在out_agent那里是入路的第几个, 并检查是否在action的phase之内
+                            out_in_road_idx = self.agents[out_agent_id][:4].index(out_road_id)
+                            if out_in_road_idx in PHASE_IN_ROAD[out_agent_action]:
+                                # TODO: 把这一个车道的下游的capacity加到现在的capacity上来
+                                # TODO: 这里并未考虑到下游的capacity会被两个路口共享，可能是小概率事件，暂不考虑
+
+                                # 当前车道在下游agent的下游三车道的Capacity
+                                # print(self.agents_out_rest_capacity[out_agent_id])
+                                rest_capacity += self.agents_out_rest_capacity[out_agent_id][out_road_id * 100 + j]
+
+                            out_rest_capacity.append(rest_capacity)
+                        out_rest_capacity.append(10000)
+
+                    # 至此, 我们获得了三条出路的所有 out_rest_capacity
+                    # 接下来, 我们需要获得这条lane中的车的信息, 以及即将汇入这个车道的车的信息
+
+                    full_pressure = 0
+                    ending_car = 0
+
+                    # 先对于当前车道中的车的信息进行处理
+                    if out_agent_id not in self.agent_list:
+                        full_pressure += len(lane_car[lane])
+                    else:
+                        out_agent_roads = self.agents[out_agent_id]
+                        for car in lane_car[lane]:
+                            # TODO: 计算多少辆车可以在10s的间隙内通过到下一个路口
+                            # TODO: 现在就假设所有车都可以通过该路口
+                            if len(info[car]['route']) < 3:
                                 ending_car += 1
                                 continue
-                            next_road = info[car]['route'][3]
+                            next_road = info[car]['route'][2]
+                            # print("info[car]:", info[car]['route'])
+                            # print("next_road:", next_road)
+                            # print("out_road_id:", out_road_id)
+                            # print("out_agent_roads:", out_agent_roads)
+                            # print("self.agents:", self.agents[agent_id])
+                            # bp()
 
-                            # 观察next_road 和 in_road_id的关系
-                            diff = out_agent_adj.index(next_road) - out_agent_adj.index(out_road_id)
-                            # diff == -1: turn right
-                            # diff == 1: turn left
-                            # diff == 2 or -2: go straight
+                            # if next_road not in out_agent_roads: # TODO: 为什么报错?
+                            if next_road not in out_agent_roads[4:]:
+                                # 左转车道上出现了直行车
+                                continue
+
+                            diff = out_agent_roads[4:].index(next_road) - out_agent_roads[:4].index(out_road_id)
                             if diff == 1:
                                 if out_rest_capacity[0] > 0:
                                     full_pressure += 1
                                     out_rest_capacity[0] -= 1
-
                             if diff == 2 or diff == -2:
                                 if out_rest_capacity[1] > 0:
                                     full_pressure += 1
                                     out_rest_capacity[1] -= 1
-
                             if diff == -1:
                                 full_pressure += 1
 
-                else:
-                    # TODO: 检查上一个路口的action,观察有没有可能将车输入过来
-                    in_agent_action = self.last_phase[in_agent_id] if in_agent_id not in actions else actions[in_agent_id]
+                    # 首先拿到当前lane的出发agent_id, 便于拿到汇入这个车道的所有车的信息
+                    in_road_id = lane // 100
+                    in_agent_id = self.roads[in_road_id]['start_inter']
+                    if in_agent_id not in self.agent_list:
+                        pass
+                        # # TODO: 将上一个路口中可能过来的车全部搜出来, 作为inroad_num
+                        # in_road_idx_for_in_agent = self.intersections[in_agent_id]['start_roads'].index(in_road_id)
+                        #
+                        # for i in range(1, 4):
+                        #     # print("end_roads:", self.intersections[in_agent_id]['end_roads'])
+                        #     # print("lanes:", self.intersections[in_agent_id]['lanes'])
+                        #     if len(self.intersections[in_agent_id]['end_roads']) < 4: continue
+                        #
+                        #     cur_road_id = self.intersections[in_agent_id]['end_roads'][(in_road_idx_for_in_agent + i) % 4]
+                        #     # i == 1: for turn right road
+                        #     # i == 2: for go straight road
+                        #     # i == 3: for turn left road
+                        #
+                        #     if out_agent_id not in self.agent_list:
+                        #         full_pressure += len(lane_car[cur_road_id*100 + (3-i)])
+                        #         continue
+                        #
+                        #     out_agent_roads = self.agents[out_agent_id]
+                        #
+                        #     for car in lane_car[cur_road_id*100 + (3 - i)]:
+                        #         # TODO: 计算多少辆车可以在10s的间隙内通过到这里.
+                        #         # TODO: 暂时先就假设全部都可以通过来
+                        #
+                        #         if len(info[car]['route']) < 4:
+                        #             # 说明这辆车即将到达终点, 没有下一个可言, 那么exception += 1
+                        #             ending_car += 1
+                        #             continue
+                        #         next_road = info[car]['route'][3]
+                        #
+                        #         # 观察next_road 和 in_road_id的关系
+                        #         diff = out_agent_roads.index(next_road) - out_agent_roads.index(out_road_id)
+                        #         # diff == -1: turn right
+                        #         # diff == 1: turn left
+                        #         # diff == 2 or -2: go straight
+                        #         if diff == 1:
+                        #             if out_rest_capacity[0] > 0:
+                        #                 full_pressure += 1
+                        #                 out_rest_capacity[0] -= 1
+                        #
+                        #         if diff == 2 or diff == -2:
+                        #             if out_rest_capacity[1] > 0:
+                        #                 full_pressure += 1
+                        #                 out_rest_capacity[1] -= 1
+                        #
+                        #         if diff == -1:
+                        #             full_pressure += 1
 
-                    # 先看该入路在in_agent那里是出路的第几个, 并检查是否在action的phase之内
-                    in_out_road_idx = self.agents[in_agent_id][4:].index(in_road_id) + 1
+                    else:
+                        # TODO: 检查上一个路口的action,观察有没有可能将车输入过来
+                        in_agent_action = self.last_phase[in_agent_id] if in_agent_id not in actions else actions[in_agent_id]
+
+                        # 先看该入路在in_agent那里是出路的第几个, 并检查是否在action的phase之内
+                        in_out_road_idx = self.agents[in_agent_id][4:].index(in_road_id)
+                        if in_out_road_idx in PHASE_OUT_ROAD[in_agent_action]:
+
+                            for in_lane in PHASE_LANE[in_agent_action]:
+                                if (in_lane - 1) // 3 == in_out_road_idx:
+                                    in_lane_id = self.agents_lane_waiting_num[in_agent_id]['re_inroad_lane'][in_lane]
+
+                                    if out_agent_id not in self.agent_list:
+                                        full_pressure += len(lane_car[in_lane_id])
+                                        continue
+
+                                    out_agent_roads = self.agents[out_agent_id]
+
+                                    for car in lane_car[in_lane_id]:
+                                        if len(info[car]['route']) < 4:
+                                            # 说明这辆车即将到达终点, 没有下一个可言, 那么exception += 1
+                                            ending_car += 1
+                                            continue
+                                        next_road = info[car]['route'][3]
+
+                                        # 观察next_road 和 in_road_id的关系
+                                        if next_road not in out_agent_roads:
+                                            continue
+                                        diff = out_agent_roads.index(next_road) - out_agent_roads.index(out_road_id)
+                                        # diff == -1: turn right
+                                        # diff == 1: turn left
+                                        # diff == 2 or -2: go straight
+                                        if diff == 1:
+                                            if out_rest_capacity[0] > 0:
+                                                full_pressure += 1
+                                                out_rest_capacity[0] -= 1
+
+                                        if diff == 2 or diff == -2:
+                                            if out_rest_capacity[1] > 0:
+                                                full_pressure += 1
+                                                out_rest_capacity[1] -= 1
+
+                                        if diff == -1:
+                                            full_pressure += 1
 
 
-                rest_capacity = out_rest_capacity[0] + out_rest_capacity[1]
-                full_pressure += min(rest_capacity, ending_car)
+                    rest_capacity = out_rest_capacity[0] + out_rest_capacity[1]
+                    full_pressure += min(rest_capacity, ending_car)
 
+                    self.agents_lane_waiting_num[agent_id]['lane_waiting_num'][lane] = full_pressure
 
-
-
-
-
-
-
-
-
-
-
+            self.get_actions(new_obs, observations, actions, lane_car, car_speed, info)
 
 
         return actions
+
+
+        # for _ in range(self.params['rounds']):
+        #
+        #     for agent_id in self.agent_list:
+        #         agent_adj = []
+        #         for in_road_id in self.agents[agent_id][:4]:
+        #             if in_road_id == -1:
+        #                 agent_adj.append(-1)
+        #             else:
+        #                 agent_adj.append(self.roads[in_road_id]['start_inter'])
+        #
+        #
+        #         re_inroad_lane = self.agents_lane_waiting_num[agent_id]['re_inroad_lane']
+        #         lane_waiting_num = self.agents_lane_waiting_num[agent_id]['lane_waiting_num']
+        #
+        #         for i in range(1, 13):
+        #
+        #             if i in re_inroad_lane:
+        #
+        #                 lane = re_inroad_lane[i]
+        #
+        #                 if lane not in lane_waiting_num:
+        #                     continue
+        #
+        #                 # waiting_num = lane_waiting_num[lane]
+        #                 out_agent_pressure = 0
+        #
+        #                 out_road_idx = (IN_OUT_LANE[i][0] - 1 - 12) // 3
+        #                 out_agent_id = agent_adj[out_road_idx]
+        #
+        #                 out_in_road_id = self.agents[agent_id][4:][out_road_idx]
+        #
+        #                 # 检查该out_agent_id 是否在agent_list里面
+        #                 out_agent_pressure += self.agents_out_rest_capacity[agent_id][lane]
+        #
+        #                 if out_agent_id in self.agents_lane_waiting_num.keys():
+        #
+        #                     for j in range(3):
+        #
+        #                         if (out_in_road_id * 100 + j) not in self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num']:
+        #                             # this out agent has no vehicle in the road
+        #                             # print("out_agent:")
+        #                             # print("road id:", self.agents[agent_id][out_road_idx])
+        #                             # print("road information:", self.roads[self.agents[agent_id][out_road_idx]])
+        #                             # print("agents[outroad_id]", self.agents[out_agent_id])
+        #                             # self.visualize(new_obs[out_agent_id]['lane_vehicle_num'], 0)
+        #                             continue
+        #
+        #                         out_agent_pressure += self.params['out_weight'] * self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num'][(out_in_road_id * 100 + j)] \
+        #                         # print("waiting_num += ", self.params['out_weight'] * self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num'][(out_in_road_id * 100 + j)])
+        #                 in_road_id = lane // 100
+        #
+        #                 last_agent = self.roads[lane // 100]['start_inter']
+        #
+        #                 in_outroad_pressure = 0
+        #                 # 检查该out_agent_id 是否在agent_list里面
+        #                 if last_agent in self.agent_list:
+        #                     in_road_idx_for_last_agent = self.agents[last_agent][4:].index(in_road_id)
+        #
+        #                     straight_lane = (in_road_idx_for_last_agent + 2) % 4 * 100 + 1
+        #                     straight_lane_num = 0 if straight_lane not in lane_car else len(lane_car[straight_lane])
+        #                     # straight_lane_num = 0 if straight_lane not in self.agents_lane_waiting_num[last_agent].keys() else self.agents_lane_waiting_num[last_agent][straight_lane]
+        #                     turn_left_lane = (in_road_idx_for_last_agent + 3) % 4 * 100 + 0
+        #                     turn_left_lane_num = 0 if turn_left_lane not in lane_car else len(lane_car[turn_left_lane])
+        #                     # turn_left_lane_num = 0 if turn_left_lane not in self.agents_lane_waiting_num[last_agent].keys() else self.agents_lane_waiting_num[last_agent][turn_left_lane]
+        #                     turn_right_lane = (in_road_idx_for_last_agent + 1) % 4 * 100 + 2
+        #                     turn_right_lane_num = 0 if turn_right_lane not in lane_car else len(lane_car[turn_right_lane])
+        #
+        #                     # 右转的暂时不考虑
+        #                     in_outroad_pressure = (straight_lane_num + turn_left_lane_num + turn_right_lane_num) / 3
+        #
+        #
+        #                 # lane_waiting_num[lane] = min(out_agent_pressure, self.agents_lane_smoothed_vehicle_num[agent_id][lane])
+        #                 # print("before GNN: lane_waiting_num[lane]", lane_waiting_num[lane])
+        #                 # print("left: ", out_agent_pressure, "right:", in_outroad_pressure + lane_waiting_num[lane])
+        #                 # print(min(out_agent_pressure, in_outroad_pressure + lane_waiting_num[lane]))
+        #
+        #                 if not out_agent_pressure >= lane_waiting_num[lane]:
+        #                     print(out_agent_pressure)
+        #                     print(lane_waiting_num[lane])
+        #                 assert in_outroad_pressure + lane_waiting_num[lane] >= lane_waiting_num[lane]
+        #
+        #                 lane_waiting_num[lane] = min(out_agent_pressure, in_outroad_pressure * self.params['in_weight'] + lane_waiting_num[lane])
+        #                 # lane_waiting_num[lane] = min(out_agent_pressure, in_outroad_pressure + self.agents_lane_waiting_num[agent_id][lane])
+        #
+        #                 # if out_agent_id in self.agents_lane_waiting_num.keys():
+        #                 #     out_re_inroad_lane = self.agents_lane_waiting_num[out_agent_id]['re_inroad_lane']
+        #                 #     out_lane_waiting_num = self.agents_lane_waiting_num[out_agent_id]['lane_waiting_num']
+        #                 #
+        #                 #     out_in_road_idx = ((out_road_idx) + 2) % 4 # \in (0, 1, 2, 3)
+        #                 #
+        #                 #     out_inroad_lane_idx = [(out_in_road_idx) * 3 + 1, (out_in_road_idx) * 3 + 2, (out_in_road_idx) * 3 + 3]
+        #                 #
+        #                 #     for idx in out_inroad_lane_idx:
+        #                 #
+        #                 #         if idx not in out_re_inroad_lane:
+        #                 #             print("-" * 40)
+        #                 #             print("out_road_idx:", out_road_idx)
+        #                 #             print("out_in_road_idx: ", out_in_road_idx)
+        #                 #             print("out_inroad_lane_idx: ", out_inroad_lane_idx)
+        #                 #             print("out_re_inroad_lane:", out_re_inroad_lane)
+        #                 #             print("agent_adj:", agent_adj)
+        #                 #             print("agents[agent_id]: ", self.agents[agent_id])
+        #                 #             print("out_agent_id:", out_agent_id)
+        #                 #             print("road id:", self.agents[agent_id][out_road_idx])
+        #                 #             print("road information:", self.roads[self.agents[agent_id][out_road_idx]])
+        #                 #             print("agents[outroad_id]", self.agents[out_agent_id])
+        #                 #             self.visualize(new_obs[agent_id]['lane_vehicle_num'], 0)
+        #                 #             self.visualize(new_obs[out_agent_id]['lane_vehicle_num'], 0)
+        #                 #             print("-" * 40)
+        #                 #             continue
+        #                 #
+        #                 #         if out_re_inroad_lane[idx] not in out_lane_waiting_num:
+        #                 #             continue
+        #                 #         out_waiting_num = out_lane_waiting_num[out_re_inroad_lane[idx]]
+        #                 #         waiting_num += self.params['out_weight'] * out_waiting_num
+        #
+        #
+        #         self.agents_lane_waiting_num[agent_id]['lane_waiting_num'] = lane_waiting_num
 
 
 scenario_dirs = [
